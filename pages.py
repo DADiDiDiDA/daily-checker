@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFrame,
 from backdrop import BACKDROP, paint_glass
 from theme import (GLYPH, PRESET_HINTS, PRESET_LABELS, PRESET_ORDER, THEME, flat, qc, rgba,
                    scoped, tint)
-from widgets import (Card, Chip, ExpandSetting, GameRow, Glyph, NumberStepper,
+from widgets import (Card, Chip, GameRow, Glyph, NumberStepper,
                      ProgressLine, SearchBox, SegmentedControl, SettingGroup, SettingRow,
                      StatTile, TabButton, ThemedCombo, ToggleSwitch, WrapLabel)
 
@@ -281,10 +281,12 @@ class GameListView(QWidget):
                 ok = self.keyword in it.name.lower()
             row.setVisible(ok)
             visible += 1 if ok else 0
-        self.empty.setVisible(visible == 0 and bool(self.items))
-        if visible == 0 and self.items:
-            self.empty.setText("没有符合条件的游戏")
-        self.scroll.setVisible(visible > 0 or not self.items)
+        # 还没检查过（items 为空）时也要给提示，否则启动后整页空白
+        self.empty.setVisible(visible == 0)
+        if visible == 0:
+            self.empty.setText("没有符合条件的游戏" if self.items
+                               else "还没有检查结果，点「开始检查」跑一轮")
+        self.scroll.setVisible(visible > 0)
 
     def refresh_theme(self) -> None:
         for row in self.rows.values():
@@ -1892,8 +1894,12 @@ class SettingsPage(QWidget):
         mins_opts = [(15, "15 分钟"), (30, "30 分钟"), (60, "1 小时"), (180, "3 小时"),
                      (360, "6 小时"), (720, "12 小时"), (1440, "24 小时")]
         cur = int(bg.get("interval_min", 720) or 720)
-        near = min(mins_opts, key=lambda kv: abs(kv[0] - cur))[0]
-        self.interval_combo = ThemedCombo([(str(m), t) for m, t in mins_opts], str(near), 118)
+        # 旧配置可能是 45 / 90 这类非标准值：把它作为选项加进去，
+        # 否则下拉显示「1 小时」而定时器实际按 45 分钟跑，用户完全看不出来
+        if cur not in [m for m, _ in mins_opts]:
+            mins_opts.append((cur, f"{cur} 分钟"))
+            mins_opts.sort(key=lambda kv: kv[0])
+        self.interval_combo = ThemedCombo([(str(m), t) for m, t in mins_opts], str(cur), 118)
         self.interval_combo.changed.connect(self._save_background)
 
         box = QWidget()
@@ -2019,6 +2025,9 @@ class SettingsPage(QWidget):
         self.auto_row.setVisible(bool(chans))
 
     def set_test_result(self, ok: bool, info: str) -> None:
+        if ok is None:                       # 发送中
+            self.test_lbl.setText(info)
+            return
         self.test_lbl.setText(("✅ 测试消息已发送，去群里看看" if ok
                                else f"❌ 发送失败：{info}") if info else "")
 
@@ -2115,8 +2124,8 @@ class SettingsPage(QWidget):
     def _build_about(self, lay: QVBoxLayout) -> None:
         self._group(lay, "关于")
         self._row(lay, "info", f"{core.APP_NAME}", f"版本 v{core.APP_VERSION}")
-        self._row(lay, "folder", "配置目录", core.config_dir(),
-                  self._small_btn("打开", lambda: core.open_in_explorer(core.config_dir())))
+        self._row(lay, "folder", "配置目录", core.cache_dir(),
+                  self._small_btn("打开", lambda: core.open_in_explorer(core.cache_dir())))
         self._row(lay, "check", "检查范围",
                   f"日常检测 {len(core.all_games(self.cfg))} 款游戏 · "
                   f"异常监控 {len(core.get_scan_dirs(self.cfg))} 个目录")

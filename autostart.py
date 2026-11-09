@@ -12,7 +12,34 @@ except Exception:                                      # 非 Windows
     winreg = None
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-VALUE_NAME = "AutomateUpdater"
+VALUE_NAME = "DailyChecker"
+# v1.5.0 之前误用了更新器的值名，两个程序会互相覆盖同一个 Run 项。
+LEGACY_VALUE_NAME = "AutomateUpdater"
+
+
+def migrate_legacy_value() -> bool:
+    """只在旧值确实指向本程序时迁移到新值名，避免误删更新器的自启项。"""
+    if winreg is None:
+        return False
+    try:
+        import winreg as wr
+        with wr.OpenKey(wr.HKEY_CURRENT_USER, RUN_KEY) as k:
+            try:
+                legacy, _ = wr.QueryValueEx(k, LEGACY_VALUE_NAME)
+            except FileNotFoundError:
+                return False
+            if "dailychecker" not in str(legacy or "").lower():
+                return False
+            # 已经写在新值名下就只删旧值，避免重复
+            try:
+                wr.QueryValueEx(k, VALUE_NAME)
+            except FileNotFoundError:
+                wr.SetValueEx(k, VALUE_NAME, 0, wr.REG_SZ, str(legacy))
+        with wr.OpenKey(wr.HKEY_CURRENT_USER, RUN_KEY, 0, wr.KEY_SET_VALUE) as k:
+            wr.DeleteValue(k, LEGACY_VALUE_NAME)
+        return True
+    except Exception:
+        return False
 
 
 def app_dir() -> str:

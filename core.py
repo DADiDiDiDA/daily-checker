@@ -24,7 +24,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -54,11 +54,13 @@ FOLDER_NAME_MAP: Dict[str, str] = {
     "MFAAXgame": "众神派对",
 }
 
+# 默认不内置任何真实凭证：新设备必须由使用者自己填 Webhook / 加签密钥。
+# （旧配置走 load_config 的浅合并，已填好的用户配置不受影响。）
 DEFAULT_DING = {
     "channel": "dingtalk",
-    "enabled": True,
-    "webhook": "https://oapi.dingtalk.com/robot/send?access_token=847f896ac85d9aaa98ebd04d129d670444e0ecaeb25bb25d4bb8435ecb099541",
-    "secret": "SEC345cec0e4827a467b4c430c672b9e0e1d1c9506b288027dda6026419e132470b",
+    "enabled": False,
+    "webhook": "",
+    "secret": "",
 }
 
 
@@ -118,13 +120,6 @@ METHODS = [
 ]
 METHOD_KEYS = tuple(k for k, _, _ in METHODS)
 # 一句话版（列表/卡片里用，详细规则见 METHODS 的第三条与每行「匹配规则」）
-METHOD_BRIEF = {
-    "keyword": "在日志目录所有 *.log 全文里找该游戏的关键字，命中即完成（不看日期）",
-    "keyword_today": "只读今天修改过的 *.log，命中该游戏关键字才算完成",
-    "log_today": "今天有新的 *.log 就算完成（不读内容、不比关键字）",
-    "file_exists": "目录里出现指定文件名就算完成（不看日期）",
-    "file_today": "指定文件存在且今天修改过才算完成",
-}
 FILE_METHODS = ("file_exists", "file_today")
 DEFAULT_METHOD = "keyword"
 # 方式短名（用于规则编辑器与规则列表的标签）
@@ -196,7 +191,6 @@ DEFAULT_RULE_MAP: Dict[str, str] = {
     "卡厄思梦境": "r_maa",
     "众神派对": "r_maa",
 }
-RULE_FIELDS = ("id", "name", "methods", "keyword", "file_target", "ext", "note")
 
 
 def game_config(name: str, cfg: Optional[dict] = None) -> Optional[GameConfig]:
@@ -463,7 +457,6 @@ SORT_MODES_SPECIAL = [
 ]
 DEFAULT_SORT_SPECIAL = "failed_first"
 # 兼容旧调用：全部排序键合集
-SORT_MODES = SORT_MODES_BASIC + [kv for kv in SORT_MODES_SPECIAL if kv[0] != "none"]
 DEFAULT_SORT = "default"
 
 
@@ -532,11 +525,6 @@ def open_in_explorer(path: str) -> None:
         pass
 
 
-def open_url(url: str) -> None:
-    try:
-        os.startfile(url)            # noqa: S606
-    except Exception:
-        pass
 
 
 def load_config() -> dict:
@@ -554,9 +542,7 @@ def load_config() -> dict:
                   "rule_map": {},
                   "custom_games": [],
                   "default_method": DEFAULT_METHOD,
-                  "default_methods": [],
                   "error_check": True,
-                  "target_folders": list(TARGET_FOLDERS),
                   "folder_map": {},
                   "file_targets": {},
                   "sort_mode": DEFAULT_SORT,
@@ -571,8 +557,15 @@ def load_config() -> dict:
                 cfg[k].update(v)
             else:
                 cfg[k] = v
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception:
+        # 配置文件损坏时先留一份备份，别让下一次保存直接把原内容抹掉
+        try:
+            import shutil
+            shutil.copy2(config_path(), config_path() + ".corrupt")
+        except Exception:
+            pass
     return cfg
 
 
@@ -666,10 +659,6 @@ def set_threshold_mb(cfg: dict, game_name: str, mb: int) -> None:
     ck["thresholds"] = thr
 
 
-def get_method(cfg: dict, game_name: str) -> str:
-    """兼容接口：返回该游戏第一个生效的判断方式。"""
-    ms = get_methods(cfg, game_name)
-    return ms[0] if ms else DEFAULT_METHOD
 
 
 def get_methods(cfg: dict, game_name: str) -> List[str]:
@@ -700,10 +689,6 @@ def get_sort_special(cfg: dict) -> str:
     return old if old in ("failed_first", "error_first", "manual") else DEFAULT_SORT_SPECIAL
 
 
-def effective_sort(cfg: dict) -> str:
-    """实际生效的排序：特殊排序启用时覆盖常规排序。"""
-    sp = get_sort_special(cfg)
-    return sp if sp != "none" else get_sort_mode(cfg)
 
 
 def get_notify_channels(cfg: dict) -> List[str]:
@@ -723,10 +708,6 @@ def get_notify_channels(cfg: dict) -> List[str]:
     return ["dingtalk"] if ding.get("enabled", True) else []
 
 
-def get_notify_channel(cfg: dict) -> str:
-    """兼容接口：返回第一个启用的通知方式，没有则 "none"。"""
-    chans = get_notify_channels(cfg)
-    return chans[0] if chans else "none"
 
 
 def get_manual_order(cfg: dict) -> List[str]:
@@ -969,9 +950,12 @@ class Engine:
         streaks: Dict[str, int] = self.state.get("games", {}) or {}
         excluded = set(get_excluded(self.cfg))
         games: List[Game] = []
+        # 判定归属必须用「当前扫描目录」，不能用写死的 BASE_DIR，
+        # 否则设置里新增的根目录下游戏拿不到存疑/日志体积/无错天数。
+        scan_roots = [os.path.normpath(d).lower()
+                      for d in get_scan_dirs(self.cfg) if str(d).strip()]
         for g in all_games(self.cfg):
             program_dir = os.path.dirname(os.path.normpath(g.folder))
-            base = os.path.normpath(BASE_DIR).lower()
             pd = os.path.normpath(program_dir).lower()
             rule = rule_of(self.cfg, g.name)
             it = Game(
@@ -979,7 +963,7 @@ class Engine:
                 target=rule_keyword(rule, g), extension=rule_ext(rule, g),
                 success_message=g.success_message,
                 program_dir=program_dir,
-                is_maawork=(pd == base or pd.startswith(base + os.sep)),
+                is_maawork=any(pd == b or pd.startswith(b + os.sep) for b in scan_roots),
                 streak=int(streaks.get(g.name, 0) or 0),
             )
             it.excluded = g.name in excluded
@@ -1139,10 +1123,9 @@ class Engine:
                 hits = [d for d in dirnames if d in target_set]
                 if not hits:
                     continue
-                display = folder_map.get(os.path.basename(os.path.dirname(dirpath)),
-                                         os.path.basename(os.path.dirname(dirpath)))
-                if display in set(get_excluded(self.cfg)):
-                    continue                    # 被排除的游戏不参与异常监控
+                display = self._resolve_game_name(dirpath, folder_map, by_name)
+                if not display or display in set(get_excluded(self.cfg)):
+                    continue                    # 认不出是哪款游戏 / 被排除，都不写进统计
                 bucket = found.setdefault(display, set())
                 for t in hits:
                     bucket.add(t)
@@ -1152,6 +1135,25 @@ class Engine:
                     it.error_flags |= set(hits)
         return found
 
+    @staticmethod
+    def _resolve_game_name(dirpath: str, folder_map: dict, by_name: dict) -> str:
+        """沿目录树往上找能对应到已知游戏的一层。
+
+        异常目录可能嵌在 debug/ 之类的子目录里，只取父目录名会凭空造出
+        一个叫「debug」的游戏条目，污染通知和天数统计。
+        """
+        cur = os.path.normpath(dirpath)
+        while True:
+            name = os.path.basename(cur)
+            if name:
+                mapped = folder_map.get(name, name)
+                if mapped in by_name:
+                    return mapped
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                return ""
+            cur = parent
+
     def update_streaks(self, all_games: List[str], error_games: Set[str],
                        daily_failed: Set[str]) -> None:
         today = time.strftime("%Y-%m-%d")
@@ -1159,7 +1161,10 @@ class Engine:
         last_dates: Dict[str, str] = self.state.setdefault("game_last_dates", {})
         for game in all_games:
             if last_dates.get(game) == today:
-                continue                      # 今天已经计过（脚本链先跑过）
+                # 今天已计过（脚本链先跑过），但本轮失败仍要把连续天数清零
+                if game in error_games or game in daily_failed:
+                    games_state[game] = 0
+                continue
             if game in error_games or game in daily_failed:
                 games_state[game] = 0
             else:
@@ -1170,8 +1175,11 @@ class Engine:
 
     # ---------- 完整一轮检查 ----------
     def run_check(self, games: List[Game], on_item=None, on_progress=None) -> dict:
-        """按原脚本流程跑一轮：日常检测 → 异常监控 → 存疑过滤 → 落盘。"""
-        self.cancel.clear()
+        """按原脚本流程跑一轮：日常检测 → 异常监控 → 存疑过滤 → 落盘。
+
+        cancel 由调用方在启动 worker 前清理；这里再 clear 会把用户刚点下的
+        「停止」一起抹掉（GUI 线程 set 与 worker 启动之间存在竞态）。
+        """
         total = len(games)
         failed: List[str] = []
         success: List[str] = []
@@ -1354,8 +1362,13 @@ class Engine:
                 headers={"Content-Type": "application/json"}, method="POST")
             resp = urllib.request.urlopen(req, timeout=10)
             body = resp.read().decode("utf-8")
-            ok = '"errcode":0' in body
-            return ok, ("发送成功" if ok else body)
+            try:
+                data = json.loads(body)
+                ok = int(data.get("errcode", -1)) == 0
+                detail = str(data.get("errmsg") or body)
+            except Exception:
+                ok, detail = False, body
+            return ok, ("发送成功" if ok else detail)
         except urllib.error.HTTPError as e:
             try:
                 detail = e.read().decode("utf-8")
@@ -1365,6 +1378,3 @@ class Engine:
         except Exception as e:
             return False, str(e)
 
-    def send_dingtalk_raw(self, content: str) -> bool:
-        ok, _ = self.send_dingtalk(self.cfg, content)
-        return ok

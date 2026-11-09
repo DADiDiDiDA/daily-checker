@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import math
 import os
 import sys
+import threading
 import time
 import winreg
 
@@ -129,6 +131,23 @@ class CheckWorker(QThread):
             self.finished_all.emit({"cancelled": False, "fatal": str(e)})
 
 
+class TestDingWorker(QThread):
+    """「发送测试」放到后台线程：urlopen 最多 10 秒，不能卡住 GUI。"""
+    done = Signal(bool, str)
+
+    def __init__(self, fn, *args):
+        super().__init__()
+        self.fn, self.args = fn, args
+
+    def run(self):
+        try:
+            r = self.fn(*self.args)
+            ok, info = r if isinstance(r, tuple) else (bool(r), "")
+        except Exception as e:
+            ok, info = False, str(e)
+        self.done.emit(bool(ok), str(info))
+
+
 class NotifyWorker(QThread):
     """按顺序发送钉钉通知（与原脚本一致，最后一条汇总前停 2 秒）。"""
 
@@ -139,12 +158,15 @@ class NotifyWorker(QThread):
         super().__init__()
         self.engine = engine
         self.messages = messages
+        # 通知与检查各用独立的取消标志：检查被「停止」后残留的 cancel
+        # 不该让之后的通知一条都发不出去
+        self.cancel = threading.Event()
 
     def run(self):
         ok = 0
         total = len(self.messages)
         for i, (title, content) in enumerate(self.messages):
-            if self.engine.cancel.is_set():
+            if self.cancel.is_set():
                 break
             self.step.emit(title)
             good, _ = core.Engine.send_dingtalk(self.engine.cfg, content)
@@ -252,10 +274,22 @@ class MainWindow(QWidget):
         if os.environ.get("AM_TOPMOST") == "1":
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setMinimumSize(1020, 660)
+        # 最小尺寸按屏幕可用区自适应，避免高 DPI / 小屏笔记本上窗口超出屏幕
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        min_w = min(1020, max(720, int(avail.width() * 0.92))) if avail else 1020
+        min_h = min(660, max(500, int(avail.height() * 0.88))) if avail else 660
+        self.setMinimumSize(min_w, min_h)
         geo = (self.cfg.get("ui") or {}).get("geometry") or []
         if len(geo) == 4:
-            self.setGeometry(int(geo[0]), int(geo[1]), int(geo[2]), int(geo[3]))
+            x, y, w, h = (int(v) for v in geo)
+            if avail:
+                # 拔掉副屏后旧坐标可能整个落在屏幕外，先夹回当前屏幕
+                w = max(min_w, min(w, avail.width()))
+                h = max(min_h, min(h, avail.height()))
+                x = max(avail.left(), min(x, avail.right() - w + 1))
+                y = max(avail.top(), min(y, avail.bottom() - h + 1))
+            self.setGeometry(x, y, w, h)
         else:
             self.resize(1120, 740)
 
@@ -482,16 +516,18 @@ class MainWindow(QWidget):
             self._apply_theme()
 
     def _toggle_quick_theme(self) -> None:
-        if THEME.mode == "auto":
-            THEME.set_mode("light" if THEME.is_dark else "dark")
-        else:
-            THEME.set_mode("dark" if THEME.mode == "light" else "light")
+        # 三态循环，能回到「跟随系统」；并立即落盘，别等下次退出才生效
+        nxt = {"auto": "light", "light": "dark", "dark": "auto"}.get(THEME.mode, "auto")
+        THEME.set_mode(nxt)
+        self.cfg.setdefault("ui", {})["theme"] = nxt
+        core.save_config(self.cfg)
         self._apply_theme()
 
     def _apply_theme(self) -> None:
         p = THEME.p
         QApplication.instance().setStyleSheet(build_qss(p))
-        self.theme_btn.setText("切换到浅色" if THEME.is_dark else "切换到深色")
+        self.theme_btn.setText("主题：" + {"auto": "跟随系统", "light": "浅色",
+                                      "dark": "深色"}.get(THEME.mode, "跟随系统"))
         self.theme_btn.setIcon(mode_icon(not THEME.is_dark))
 
         tint(self.brand_name, p.text)
@@ -507,28 +543,12 @@ class MainWindow(QWidget):
         self.page_games.refresh_theme()
         if hasattr(self, "page_methods"):
             self.page_methods.refresh_theme()
-        self._rebuild_settings()
+        # 只刷配色，不重建整页（重建会丢掉用户正在输入、还没失焦的 Webhook 等内容）
+        if hasattr(self, "page_settings"):
+            self.page_settings.refresh_theme()
         self._update_background()
         self.update()
 
-    def _rebuild_settings(self) -> None:
-        """主题变化后重建设置页（保证分组文字配色一致）。"""
-        idx = self.PAGE_INDEX["settings"]
-        old = self._page_wraps[idx]
-        new_page = SettingsPage(self.cfg)
-        self._wire_settings(new_page)
-        wrap = QWidget()
-        wl = QVBoxLayout(wrap)
-        wl.setContentsMargins(22, 4, 18, 18)
-        wl.addWidget(new_page)
-        self.stack.insertWidget(idx, wrap)
-        old.hide()                 # removeWidget 不隐藏，旧页会盖住新页闪一下
-        self.stack.removeWidget(old)
-        old.deleteLater()
-        self._page_wraps[idx] = wrap
-        self.page_settings = new_page
-        if idx == self.stack.currentIndex():
-            self.stack.setCurrentWidget(wrap)
 
     def _update_logo(self) -> None:
         p = THEME.p
@@ -691,7 +711,7 @@ class MainWindow(QWidget):
         self.tray = TrayIcon(icon, self)
         self.tray.open_main.connect(self.show_main)
         self.tray.open_settings.connect(lambda: self.show_main("settings"))
-        self.tray.check_now.connect(lambda: self.start_check(silent=True))
+        self.tray.check_now.connect(self._tray_check_now)
         self.tray.send_notify.connect(self.send_notify)
         self.tray.cancel_task.connect(self.cancel_tasks)
         self.tray.autostart_toggled.connect(self._set_autostart)
@@ -743,12 +763,33 @@ class MainWindow(QWidget):
         self.toast.show_text("已设置为开机后台启动" if (on and ok) else
                              ("已取消开机启动" if not on else "设置开机启动失败"))
 
-    def quit_app(self) -> None:
+    def _shutdown(self) -> None:
+        """统一退出入口：先取消并等待所有后台线程，再保存配置退出。
+
+        托盘「退出」以前绕过 closeEvent，扫描/通知还在跑就 QApplication.quit()，
+        会留下半成品状态甚至 QThread destroyed while running 崩溃。
+        """
+        if getattr(self, "_shutting_down", False):
+            return
+        self._shutting_down = True
         self._quitting = True
+        self.engine.cancel.set()
+        for name in ("check_worker", "notify_worker"):
+            w = getattr(self, name, None)
+            if w is None:
+                continue
+            wc = getattr(w, "cancel", None)
+            if wc is not None and hasattr(wc, "set"):
+                wc.set()
+            if w.isRunning():
+                w.wait(8000)
         self._save_cfg()
         if self.tray is not None:
             self.tray.hide()
         QApplication.quit()
+
+    def quit_app(self) -> None:
+        self._shutdown()
 
     # ---------- 数据与检查 ----------
     def _attention_count(self) -> int:
@@ -769,6 +810,12 @@ class MainWindow(QWidget):
             f'<p style="margin:0;line-height:160%">监控目录 {scan}</p>'
             f'<p style="margin:4px 0 0 0;line-height:160%">游戏 {len(self.games)} 款'
             f"　异常 {n_err}　未完成 {n_fail}</p>")
+
+    def _tray_check_now(self) -> None:
+        """托盘「立即检查」是用户主动动作，窗口隐藏时也要给一点反馈。"""
+        self.start_check(silent=False)
+        if not self.isVisible() and self.tray is not None:
+            self.tray.notify("正在检查", "正在检查游戏日常，完成后托盘角标会更新")
 
     def start_check(self, silent: bool = False) -> None:
         if self.check_worker and self.check_worker.isRunning():
@@ -824,29 +871,40 @@ class MainWindow(QWidget):
         n_fail = len(result["failed"])
         n_err = len(result["folder_errors"])
         n_susp = len(result["suspicious"])
-        if self._cli.get("check") or self._cli.get("notify"):
+        cli = dict(getattr(self, "_cli_override", None) or self._cli)
+        self._cli_override = None
+        cancelled = bool(result.get("cancelled"))
+        cli_mode = bool(cli.get("check") or cli.get("notify"))
+        auto = bool((self.cfg.get("background") or {}).get("auto_notify", True))
+
+        if cli_mode:
             # 命令行模式：只有 --notify 才发送，--check 纯检查不发通知
-            if self._cli.get("notify") and not result.get("cancelled"):
-                self._send_notify_worker()
-            elif self._cli.get("quit_after"):
-                if not (self.notify_worker and self.notify_worker.isRunning()):
-                    QTimer.singleShot(400, self.quit_app)
-        elif not self._silent_check:
-            msg = "检查完成"
-            if n_err or n_fail:
-                msg += f"：异常 {n_err}、未完成 {n_fail}"
-            if n_susp:
-                msg += f"、存疑 {n_susp}"
-            self.toast.show_text(msg + ("　·　可点「发送通知」推送" if n_att or n_susp else "：一切正常"),
-                                 ok=not (n_err or n_fail))
-        # 定时/后台检查：按设置自动发送到所有开启的通知方式
-        elif bool((self.cfg.get("background") or {}).get("auto_notify", True)):
+            should_notify = bool(cli.get("notify")) and not cancelled
+        else:
+            # 手动检查、定时检查、后台检查一视同仁：按设置自动发送
+            should_notify = auto and not cancelled
+            if not self._silent_check:
+                msg = "检查完成"
+                if n_err or n_fail:
+                    msg += f"：异常 {n_err}、未完成 {n_fail}"
+                if n_susp:
+                    msg += f"、存疑 {n_susp}"
+                tail = ("　·　正在自动推送通知" if should_notify
+                        else ("　·　可点「发送通知」推送" if n_att or n_susp else "：一切正常"))
+                self.toast.show_text(msg + tail, ok=not (n_err or n_fail))
+
+        if should_notify:
             chans = core.get_notify_channels(self.cfg)
             if "windows" in chans:
                 summary = self.engine.build_all_messages(result)[3][1]
                 self._notify("日常检查", summary)
             if "dingtalk" in chans:
                 self._send_notify_worker()
+
+        # --quit-after 对所有模式生效；若有通知 worker 在跑，由 _on_notify_done 收尾退出
+        if cli.get("quit_after") and not (
+                self.notify_worker and self.notify_worker.isRunning()):
+            QTimer.singleShot(400, self.quit_app)
 
     def cancel_tasks(self) -> None:
         self.engine.cancel.set()
@@ -865,15 +923,16 @@ class MainWindow(QWidget):
         if not self.last_result:
             self.toast.show_text("还没有检查结果，先「开始检查」", ok=False)
             return
-        if "windows" in chans:
-            summary = self.engine.build_all_messages(self.last_result)[3][1]
-            self._notify("日常检查", summary)
         if "dingtalk" in chans:
             messages = self.engine.build_all_messages(self.last_result)
             if os.environ.get("DC_NO_PREVIEW") != "1":
                 dlg = NotifyPreviewDialog(self, messages)
                 if not dlg.exec():
-                    return
+                    return          # 预览里取消：一条都不发（包括 Windows 通知）
+        if "windows" in chans:
+            summary = self.engine.build_all_messages(self.last_result)[3][1]
+            self._notify("日常检查", summary)
+        if "dingtalk" in chans:
             self._send_notify_worker()
         elif "windows" in chans:
             self.toast.show_text("已发送 Windows 系统通知")
@@ -898,13 +957,27 @@ class MainWindow(QWidget):
         good = ok == total
         self.toast.show_text(f"钉钉通知发送完成：{ok}/{total}" + ("" if good else "（部分失败，检查配置）"),
                              ok=good)
-        self._notify("日常检查通知已发送",
-                     f"{ok}/{total} 条发送成功" + ("" if good else "，部分失败请检查钉钉配置"))
+        # 只在用户开启了系统通知时补充一条结果回执，别绕过「只留钉钉」的设置
+        if "windows" in core.get_notify_channels(self.cfg):
+            self._notify("日常检查通知已发送",
+                         f"{ok}/{total} 条发送成功" + ("" if good else "，部分失败请检查钉钉配置"))
         if self._cli.get("quit_after"):
             QTimer.singleShot(400, self.quit_app)
 
     def _test_ding(self) -> None:
-        ok, info = core.Engine.send_dingtalk(self.cfg, "日常检查器测试消息：如果你看到这条，说明通知配置是通的。")
+        w = getattr(self, "_ding_test_worker", None)
+        if w is not None and w.isRunning():
+            self.toast.show_text("测试消息正在发送中", ok=False)
+            return
+        if hasattr(self, "page_settings"):
+            self.page_settings.set_test_result(None, "正在发送测试消息…")
+        w = TestDingWorker(core.Engine.send_dingtalk, self.cfg,
+                           "日常检查器测试消息：如果你看到这条，说明通知配置是通的。")
+        w.done.connect(self._on_ding_test_done)
+        self._ding_test_worker = w
+        w.start()
+
+    def _on_ding_test_done(self, ok: bool, info: str) -> None:
         if hasattr(self, "page_settings"):
             self.page_settings.set_test_result(ok, info)
         self.toast.show_text("测试消息已发送" if ok else f"发送失败：{info}", ok=ok)
@@ -917,18 +990,23 @@ class MainWindow(QWidget):
 
     def open_game_debug(self, key: str) -> None:
         it = next((i for i in self.games if i.key == key), None)
-        if it and it.debug_dir:
-            if not os.path.isdir(it.debug_dir):
-                os.makedirs(it.debug_dir, exist_ok=True)
-            core.open_in_explorer(it.debug_dir)
+        if not it or not it.debug_dir:
+            return
+        if not os.path.isdir(it.debug_dir):
+            # 不再凭空创建目录：路径配错时应该明确提示，而不是造一个空文件夹掩盖问题
+            self.toast.show_text(f"目录不存在：{it.debug_dir}", ok=False)
+            return
+        core.open_in_explorer(it.debug_dir)
 
     def open_game_log(self, key: str) -> None:
         """打开存放日志关键字的文件夹（it.folder 本身）。"""
         it = next((i for i in self.games if i.key == key), None)
-        if it:
-            if not os.path.isdir(it.folder):
-                os.makedirs(it.folder, exist_ok=True)
-            core.open_in_explorer(it.folder)
+        if not it:
+            return
+        if not os.path.isdir(it.folder):
+            self.toast.show_text(f"日志目录不存在：{it.folder}", ok=False)
+            return
+        core.open_in_explorer(it.folder)
 
     # ---------- 排序 / 手动顺序 ----------
     def on_sort_changed(self, regular: str, special: str) -> None:
@@ -1262,20 +1340,12 @@ class MainWindow(QWidget):
     def closeEvent(self, e):
         bg = self.cfg.get("background", {})
         if (not self._quitting and bg.get("close_to_tray", True)
-                and self.tray is not None and self.tray.isVisible()):
+                and self.tray is not None):
             e.ignore()
             self.hide()
             return
-        self._save_cfg()
-        if self.check_worker and self.check_worker.isRunning():
-            self.engine.cancel.set()
-            self.check_worker.wait(2000)
-        if self.tray is not None:
-            self.tray.hide()
+        self._shutdown()
         super().closeEvent(e)
-        if not self._quitting:
-            self._quitting = True
-            QApplication.quit()
 
 
 # ---------------------------------------------------------------- 入口
@@ -1286,6 +1356,8 @@ def resource_path(name: str) -> str:
 
 
 def main() -> int:
+    # 一次性迁移旧版误用的开机自启注册表值名（升级用户无需手动处理）
+    autostart.migrate_legacy_value()
     flags = {a.lower() for a in sys.argv[1:]}
     if "--help" in flags or "-h" in flags:
         print("用法: DailyChecker.exe [选项]\n"
@@ -1335,10 +1407,15 @@ def main() -> int:
     probe = QLocalSocket()
     probe.connectToServer(ipc_key)
     if probe.waitForConnected(400):
-        if not start_hidden:
-            probe.write(b"show")
+        # 把命令行参数交给已经在跑的实例，否则 --check/--notify/--quit-after
+        # 在常驻托盘时会被直接丢掉，计划任务等于什么都没做
+        payload = {"show": not start_hidden, "hidden": start_hidden, "cli": cli}
+        try:
+            probe.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             probe.flush()
             probe.waitForBytesWritten(400)
+        except Exception:
+            pass
         probe.disconnectFromServer()
         return 0
 
@@ -1348,12 +1425,43 @@ def main() -> int:
 
     win = MainWindow(start_hidden=start_hidden, cli=cli)
 
+    def _dispatch(payload: dict) -> None:
+        p = payload or {}
+        c = dict(p.get("cli") or {})
+        c.pop("quit_after", None)       # 二次实例不能让常驻托盘跟着退出
+        if c.get("check") or c.get("notify"):
+            # 只对这一轮检查生效，不改变常驻实例自己的 CLI 状态
+            win._cli_override = c
+            QTimer.singleShot(0, lambda: win.start_check(silent=True)
+                              if c.get("check") else win.send_notify())
+            return
+        if p.get("show") or not p.get("hidden"):
+            win.show_main()
+
     def _on_second_instance() -> None:
         while server.hasPendingConnections():
             conn = server.nextPendingConnection()
-            conn.readyRead.connect(lambda c=conn: c.readAll())
-            conn.disconnected.connect(conn.deleteLater)
-        win.show_main()
+            state = {"buf": b"", "done": False}
+
+            def _read(c=conn, st=state):
+                st["buf"] += bytes(c.readAll())
+                if st["done"]:
+                    return
+                try:
+                    payload = json.loads(st["buf"].decode("utf-8"))
+                except Exception:
+                    return                  # 分包没收齐，等下一次 readyRead
+                st["done"] = True
+                _dispatch(payload)
+
+            def _on_disconnect(c=conn, st=state):
+                # 兼容旧版只发 b"show" 的客户端
+                if not st["done"] and st["buf"].strip() in (b"show", b""):
+                    win.show_main()
+                c.deleteLater()
+
+            conn.readyRead.connect(_read)
+            conn.disconnected.connect(_on_disconnect)
 
     server.newConnection.connect(_on_second_instance)
 
@@ -1362,14 +1470,27 @@ def main() -> int:
     return app.exec()
 
 
+def _excepthook(exc_type, exc, tb):
+    """Qt 事件循环里的异常不会冒到 main()，必须挂 excepthook 才能留下日志。"""
+    import traceback
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    try:
+        with open(os.path.join(core.config_dir(), "crash.log"), "a", encoding="utf-8") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{text}")
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc, tb)
+
+
 if __name__ == "__main__":
+    sys.excepthook = _excepthook
     try:
         sys.exit(main())
     except Exception:
         import traceback
         try:
             log_path = os.path.join(core.config_dir(), "crash.log")
-            with open(log_path, "w", encoding="utf-8") as f:
+            with open(log_path, "a", encoding="utf-8") as f:
                 f.write(traceback.format_exc())
         except Exception:
             pass

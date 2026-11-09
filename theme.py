@@ -270,7 +270,7 @@ def build_qss(p: Palette) -> str:
 
     QPushButton#soft {{
         background: {rgba(p.accent, 0.14)};
-        color: {p.accent if not p.dark else p.accent};
+        color: {p.accent};
         padding: 4px 16px;
         min-height: 20px;
     }}
@@ -386,10 +386,6 @@ def card_color(p: Palette, hover: bool = False, alpha_scale: float = 1.0):
     return qc(p.card_alt if hover else p.card, min(1.0, alpha))
 
 
-def contrast_text(hex_color: str) -> str:
-    c = QColor(hex_color)
-    lum = (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) / 255
-    return "#111318" if lum > 0.6 else "#FFFFFF"
 
 
 GLYPH = {

@@ -345,7 +345,7 @@ class Card(QFrame):
             g.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.fillPath(path, g)
 
-        painter.setPen(QPen(qc(p.border, p.border_alpha if not p.dark else p.border_alpha * 1.0), 1))
+        painter.setPen(QPen(qc(p.border, p.border_alpha), 1))
         painter.drawPath(path)
         painter.end()
 
@@ -1027,7 +1027,8 @@ class GameRow(QFrame):
             act_thr = m.addAction("设置日志阈值…")
         act_method = m.addAction("设置判定规则…")
         cfg_now = core.load_config()
-        act_method.setText(f"判定规则：{core.rule_name_of(cfg_now, it.name)}")
+        # 写清楚这是可点的动作，别让「判定规则：xxx」看着像一行只读状态
+        act_method.setText(f"修改判定规则…（当前：{core.rule_name_of(cfg_now, it.name)}）")
         m.addSeparator()
         act_excl = m.addAction("取消排除（恢复检查）" if it.excluded
                                else "排除此游戏（不再检查）")
@@ -1038,7 +1039,8 @@ class GameRow(QFrame):
         if act is None:
             return
         if act is act_open:
-            self.open_requested.emit(it.key)
+            # 「打开日志文件夹」要开日志目录，不是程序根目录
+            self.log_requested.emit(it.key)
         elif act_debug is not None and act is act_debug:
             self.debug_requested.emit(it.key)
         elif act_thr is not None and act is act_thr:
@@ -1095,12 +1097,16 @@ class Toast(QWidget):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._fade_out)
+        # 用可取消的定时器：singleShot 的残留回调会把刚弹出的下一条 Toast 一起隐藏
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(lambda: self.setVisible(False))
 
     def show_text(self, text: str, ok: bool = True) -> None:
         p = THEME.p
         self.lbl.setText(text)
         tint(self.lbl, p.text)
-        border = qc(p.danger, 0.45).name() if not ok else rgba(p.border, 0.22)
+        border = rgba(p.danger, 0.45) if not ok else rgba(p.border, 0.22)
         # 带 #toast 选择器：无选择器的规则会级联到子 QLabel，给文字画出一圈多余边框
         self.setStyleSheet(
             f"#toast{{background: {rgba(p.surface(), 0.97)};"
@@ -1111,6 +1117,7 @@ class Toast(QWidget):
         self.raise_()                 # 页面重建后可能盖住 Toast，置顶再显示
         self.effect.setOpacity(0.0)
         self.setVisible(True)
+        self._hide_timer.stop()
         self._anim.stop()
         self._anim.setDuration(160)
         self._anim.setStartValue(0.0)
@@ -1124,32 +1131,9 @@ class Toast(QWidget):
         self._anim.setStartValue(1.0)
         self._anim.setEndValue(0.0)
         self._anim.start()
-        QTimer.singleShot(280, lambda: self.setVisible(False))
+        self._hide_timer.start(280)
 
 
-class SectionHead(QWidget):
-    """设置页分组标题。"""
-
-    def __init__(self, title: str, desc: str = "", parent=None):
-        super().__init__(parent)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
-        t = QLabel(title)
-        f = QFont("Microsoft YaHei UI")
-        f.setPixelSize(14)
-        f.setWeight(QFont.DemiBold)
-        t.setFont(f)
-        tint(t, THEME.p.text)
-        lay.addWidget(t)
-        if desc:
-            d = QLabel(desc)
-            fd = QFont("Microsoft YaHei UI")
-            fd.setPixelSize(11)
-            d.setFont(fd)
-            d.setWordWrap(True)
-            tint(d, THEME.p.text_muted)
-            lay.addWidget(d)
 
 
 class SegmentedControl(QFrame):
@@ -1560,96 +1544,6 @@ class _ClickRow(QWidget):
         super().mouseReleaseEvent(e)
 
 
-class ExpandSetting(Card):
-    """可展开的设置卡片：标题行常显，点箭头/整行展开详细设置。"""
-
-    toggled = Signal(bool)
-
-    def __init__(self, icon: str, title: str, desc: str = "", control=None,
-                 body=None, parent=None):
-        super().__init__(parent, padding=0)
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self._open = False
-
-        wrap = QVBoxLayout()
-        wrap.setContentsMargins(0, 0, 0, 0)
-        wrap.setSpacing(0)
-        self.lay.addLayout(wrap)
-
-        head = _ClickRow()
-        hl = QHBoxLayout(head)
-        hl.setContentsMargins(16, 13, 12, 13)
-        hl.setSpacing(13)
-
-        self.icon = Glyph(icon, 18, THEME.p.text_dim)
-        self.icon.setFixedSize(26, 26)
-        hl.addWidget(self.icon, 0, Qt.AlignVCenter)
-
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        self.title_lbl = QLabel(title)
-        ft = QFont("Microsoft YaHei UI")
-        ft.setPixelSize(13)
-        ft.setWeight(QFont.DemiBold)
-        self.title_lbl.setFont(ft)
-        tint(self.title_lbl, THEME.p.text)
-        col.addWidget(self.title_lbl)
-        self.desc_lbl = QLabel(desc, self)
-        fd = QFont("Microsoft YaHei UI")
-        fd.setPixelSize(11)
-        self.desc_lbl.setFont(fd)
-        self.desc_lbl.setWordWrap(True)
-        tint(self.desc_lbl, THEME.p.text_muted)
-        col.addWidget(self.desc_lbl)
-        self.desc_lbl.setVisible(bool(desc))      # 有父级之后再显示，避免变成顶层小窗
-        hl.addLayout(col, 1)
-
-        self.control = control
-        if control is not None:
-            hl.addWidget(control, 0, Qt.AlignVCenter)
-
-        self.chevron = ChevronButton()
-        self.chevron.clicked.connect(self.toggle)
-        hl.addWidget(self.chevron, 0, Qt.AlignVCenter)
-
-        head.clicked.connect(self.toggle)
-        wrap.addWidget(head)
-
-        self.body = body or QWidget()
-        flat(self.body)
-        self.body_wrap = QWidget()
-        flat(self.body_wrap)
-        bl = QVBoxLayout(self.body_wrap)
-        bl.setContentsMargins(16, 2, 16, 14)
-        bl.setSpacing(0)
-        bl.addWidget(self.body)
-        self.body_wrap.setVisible(False)
-        self.body_wrap.setMaximumHeight(0)
-        wrap.addWidget(self.body_wrap)
-
-    def _restyle_chevron(self) -> None:
-        self.chevron.set_up(self._open)
-
-    def is_open(self) -> bool:
-        return self._open
-
-    def toggle(self) -> None:
-        self.set_open(not self._open)
-        self.toggled.emit(self._open)
-
-    def set_open(self, on: bool) -> None:
-        self._open = on
-        self._restyle_chevron()
-        self.body_wrap.setVisible(on)
-        if on:
-            self.body_wrap.setMaximumHeight(self.body.sizeHint().height() + 24)
-        else:
-            self.body_wrap.setMaximumHeight(0)
-
-    def set_summary(self, text: str) -> None:
-        if self.desc_lbl is not None:
-            self.desc_lbl.setText(text)
-            self.desc_lbl.setVisible(bool(text))
 
 
 class SettingRow(Card):
@@ -1744,15 +1638,5 @@ class TabButton(QPushButton):
         self._apply()
 
 
-def hline(p=None) -> QFrame:
-    p = p or THEME.p
-    line = QFrame()
-    line.setFixedHeight(1)
-    line.setStyleSheet(f"QFrame{{background: {rgba(p.border, p.border_alpha)}; border: none;}}")
-    return line
 
 
-def vspace(h: int) -> QWidget:
-    w = QWidget()
-    w.setFixedHeight(h)
-    return w
