@@ -246,7 +246,10 @@ def build_qss(p: Palette) -> str:
     QPushButton {{
         background: transparent;
         border: none;
-        padding: 7px 14px;
+        /* 垂直内边距不能太大：按钮普遍固定 26~30px 高，8px 上下内边距只剩 10px
+           内容区，比 13px 字的行高还矮，汉字上下会被裁掉一条 */
+        padding: 4px 14px;
+        min-height: 20px;
         border-radius: {_px_radius(btn_radius(p))};
         color: {p.text};
         font-size: 13px;
@@ -259,7 +262,8 @@ def build_qss(p: Palette) -> str:
         background: {p.accent};
         color: {p.accent_on};
         font-weight: 600;
-        padding: 9px 18px;
+        padding: 6px 18px;
+        min-height: 24px;
     }}
     QPushButton#primary:hover {{ background: {p.accent_hover}; }}
     QPushButton#primary:disabled {{ background: {rgba(p.text, 0.09)}; color: {p.text_muted}; }}
@@ -267,21 +271,24 @@ def build_qss(p: Palette) -> str:
     QPushButton#soft {{
         background: {rgba(p.accent, 0.14)};
         color: {p.accent if not p.dark else p.accent};
-        padding: 8px 16px;
+        padding: 4px 16px;
+        min-height: 20px;
     }}
     QPushButton#soft:hover {{ background: {rgba(p.accent, 0.22)}; }}
     QPushButton#soft:disabled {{ background: {rgba(p.text, 0.05)}; color: {p.text_muted}; }}
 
     QPushButton#ghost {{
         background: {rgba(p.text, 0.055)};
-        padding: 8px 16px;
+        padding: 4px 16px;
+        min-height: 20px;
     }}
     QPushButton#ghost:hover {{ background: {rgba(p.text, 0.10)}; }}
 
     QPushButton#danger {{
         background: {rgba(p.danger, 0.16)};
         color: {p.danger};
-        padding: 8px 16px;
+        padding: 4px 16px;
+        min-height: 20px;
     }}
     QPushButton#danger:hover {{ background: {rgba(p.danger, 0.26)}; }}
 

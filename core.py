@@ -24,11 +24,12 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
 BASE_DIR = r"D:\Automate\My-maawork"
+DEFAULT_SCAN_DIRS = [BASE_DIR]      # 默认扫描的自动化程序根目录，可在设置里增删
 TARGET_FOLDERS = ["on_error", "screencap"]
 DEBUG_FOLDER_NAME = "debug"
 
@@ -794,6 +795,80 @@ def get_folder_map(cfg: dict) -> Dict[str, str]:
     return merged
 
 
+def get_scan_dirs(cfg: dict) -> List[str]:
+    """要扫描的自动化程序根目录（默认只有 My-maawork）。"""
+    raw = (cfg.get("check") or {}).get("scan_dirs")
+    if raw is None:
+        return list(DEFAULT_SCAN_DIRS)
+    out = []
+    for x in raw or []:
+        s = str(x).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def set_scan_dirs(cfg: dict, dirs: List[str]) -> List[str]:
+    """写入扫描根目录；等于默认值时删掉配置项，保持配置文件干净。"""
+    ck = cfg.setdefault("check", {})
+    clean: List[str] = []
+    for d in dirs or []:
+        s = os.path.normpath(str(d).strip()) if str(d).strip() else ""
+        if s and s not in clean:
+            clean.append(s)
+    if clean == [os.path.normpath(x) for x in DEFAULT_SCAN_DIRS]:
+        ck.pop("scan_dirs", None)
+    else:
+        ck["scan_dirs"] = clean
+    return clean
+
+
+def get_scan_excludes(cfg: dict) -> List[str]:
+    """扫描时要跳过的子目录（完整路径，或只写文件夹名）。"""
+    raw = (cfg.get("check") or {}).get("scan_excludes") or []
+    out: List[str] = []
+    for x in raw:
+        s = str(x).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def set_scan_excludes(cfg: dict, items: List[str]) -> List[str]:
+    ck = cfg.setdefault("check", {})
+    clean: List[str] = []
+    for x in items or []:
+        s = str(x).strip()
+        if not s:
+            continue
+        s = os.path.normpath(s) if (os.sep in s or "/" in s) else s
+        if s not in clean:
+            clean.append(s)
+    if clean:
+        ck["scan_excludes"] = clean
+    else:
+        ck.pop("scan_excludes", None)
+    return clean
+
+
+def is_excluded_dir(path: str, excludes: Optional[List[str]] = None,
+                    cfg: Optional[dict] = None) -> bool:
+    """子目录是否被排除：完整路径按路径比，单写名字的按文件夹名比。"""
+    items = excludes if excludes is not None else get_scan_excludes(cfg or {})
+    name = os.path.basename(os.path.normpath(path)).casefold()
+    p = os.path.normpath(path).casefold()
+    for x in items:
+        s = str(x).strip()
+        if not s:
+            continue
+        if os.sep in s or "/" in s:
+            if os.path.normpath(s).casefold() == p:
+                return True
+        elif s.casefold() == name:
+            return True
+    return False
+
+
 def get_target_folders(cfg: dict) -> List[str]:
     """异常监控要检测的文件夹名（on_error / screencap 等）。"""
     raw = (cfg.get("check") or {}).get("target_folders")
@@ -1050,25 +1125,31 @@ class Engine:
             return found
         folder_map = get_folder_map(self.cfg)
         by_name = {g.name: g for g in games}
-        if not os.path.exists(BASE_DIR):
-            return found
-        for dirpath, dirnames, _ in os.walk(BASE_DIR):
+        excludes = get_scan_excludes(self.cfg)
+        roots = [d for d in get_scan_dirs(self.cfg) if os.path.isdir(d)]
+        for root in roots:
             if self.cancel.is_set():
                 break
-            hits = [d for d in dirnames if d in target_set]
-            if not hits:
-                continue
-            display = folder_map.get(os.path.basename(os.path.dirname(dirpath)),
-                                     os.path.basename(os.path.dirname(dirpath)))
-            if display in set(get_excluded(self.cfg)):
-                continue                    # 被排除的游戏不参与异常监控
-            bucket = found.setdefault(display, set())
-            for t in hits:
-                bucket.add(t)
-            # My-maawork 游戏条目直接标记，列表行能立刻看到
-            it = by_name.get(display)
-            if it is not None:
-                it.error_flags |= set(hits)
+            for dirpath, dirnames, _ in os.walk(root):
+                if self.cancel.is_set():
+                    break
+                # 被排除的子目录整棵跳过
+                dirnames[:] = [d for d in dirnames
+                               if not is_excluded_dir(os.path.join(dirpath, d), excludes)]
+                hits = [d for d in dirnames if d in target_set]
+                if not hits:
+                    continue
+                display = folder_map.get(os.path.basename(os.path.dirname(dirpath)),
+                                         os.path.basename(os.path.dirname(dirpath)))
+                if display in set(get_excluded(self.cfg)):
+                    continue                    # 被排除的游戏不参与异常监控
+                bucket = found.setdefault(display, set())
+                for t in hits:
+                    bucket.add(t)
+                # My-maawork 游戏条目直接标记，列表行能立刻看到
+                it = by_name.get(display)
+                if it is not None:
+                    it.error_flags |= set(hits)
         return found
 
     def update_streaks(self, all_games: List[str], error_games: Set[str],
@@ -1150,12 +1231,19 @@ class Engine:
         }
 
     def _maawork_dirs(self) -> List[str]:
-        try:
-            names = get_folder_map(self.cfg).keys()
-            return [n for n in os.listdir(BASE_DIR)
-                    if os.path.isdir(os.path.join(BASE_DIR, n)) and n in names]
-        except Exception:
-            return []
+        names = set(get_folder_map(self.cfg).keys())
+        excludes = get_scan_excludes(self.cfg)
+        out: List[str] = []
+        for root in get_scan_dirs(self.cfg):
+            try:
+                for n in os.listdir(root):
+                    p = os.path.join(root, n)
+                    if os.path.isdir(p) and n in names \
+                            and not is_excluded_dir(p, excludes) and n not in out:
+                        out.append(n)
+            except Exception:
+                continue
+        return out
 
     # ---------- 消息构建（与原脚本四条通知一致） ----------
     def sort_by_order(self, games: Iterable[str]) -> List[str]:

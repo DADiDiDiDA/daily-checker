@@ -7,10 +7,11 @@ import os
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QGraphicsDropShadowEffect,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFrame,
+                               QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
+                               QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+                               QScrollArea, QSizePolicy, QSpacerItem, QStackedWidget,
+                               QVBoxLayout, QWidget)
 
 from backdrop import BACKDROP, paint_glass
 from theme import (GLYPH, PRESET_HINTS, PRESET_LABELS, PRESET_ORDER, THEME, flat, qc, rgba,
@@ -479,53 +480,69 @@ class GameRuleRow(QWidget):
         self.combo._restyle()
 
 
-class MethodsView(QWidget):
-    """独立页：判定规则库 + 每款游戏引用了哪条规则。"""
+def _page_scroll() -> QScrollArea:
+    """独立子页统一的滚动外壳。"""
+    sc = QScrollArea()
+    sc.setWidgetResizable(True)
+    sc.setFrameShape(QFrame.NoFrame)
+    sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    # 只让视口自身透明；不要用无选择器的 setStyleSheet，那会把
+    # "background: transparent" 级联给所有子控件，把按钮底色一起抹掉
+    sc.viewport().setStyleSheet("QScrollArea > QWidget { background: transparent; }")
+    holder = QWidget()
+    lay = QVBoxLayout(holder)
+    lay.setContentsMargins(0, 0, 6, 8)
+    lay.setSpacing(12)
+    sc.setWidget(holder)
+    sc.lay = lay
+    return sc
+
+
+def _clear_layout(lay: QVBoxLayout) -> None:
+    while lay.count():
+        item = lay.takeAt(0)
+        w = item.widget()
+        if w is not None:
+            w.hide()
+            w.deleteLater()
+
+
+def _pill(text: str, color_key: str = "text") -> QLabel:
+    """只读的小胶囊（内置映射条目用）。"""
+    p = THEME.p
+    lbl = _label(text, 11, color_key)
+    scoped(lbl, f"background: {rgba(p.text, 0.055)}; border-radius: 8px;"
+                f"padding: 4px 10px;")
+    lbl.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    return lbl
+
+
+class RulesView(QWidget):
+    """判定规则 · 规则库（独立子页）。"""
 
     new_rule_requested = Signal()
     edit_rule_requested = Signal(str)
     duplicate_rule_requested = Signal(str)
     delete_rule_requested = Signal(str)
-    add_game_requested = Signal()
-    game_rule_changed = Signal(str, str)
-    game_remove_requested = Signal(str)
-    game_threshold_changed = Signal(str, int)
-    folder_map_manage_requested = Signal()
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
+        self.cfg = cfg
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # 只让视口自身透明；不要用无选择器的 setStyleSheet，那会把
-        # "background: transparent" 级联给所有子控件，把按钮底色一起抹掉
-        scroll.viewport().setStyleSheet(
-            "QScrollArea > QWidget { background: transparent; }")
-        holder = QWidget()
-        body = QVBoxLayout(holder)
-        body.setContentsMargins(0, 0, 6, 8)
-        body.setSpacing(12)
-        scroll.setWidget(holder)
+        scroll = _page_scroll()
+        body = scroll.lay
         outer.addWidget(scroll)
 
-        # ---------- 顶部说明卡 ----------
         card = Card(padding=16)
         head = QHBoxLayout()
         head.setSpacing(8)
-        head.addWidget(_label("判定规则库", 15, "text", bold=True))
+        self.title = _label("规则库", 15, "text", bold=True)
+        head.addWidget(self.title)
+        self.count = _label("", 11, "text_muted")
+        head.addWidget(self.count)
         head.addStretch(1)
-        add_game_btn = QPushButton("添加游戏…")
-        add_game_btn.setObjectName("soft")
-        add_game_btn.setCursor(Qt.PointingHandCursor)
-        add_game_btn.setFixedHeight(30)
-        add_game_btn.setToolTip("添加一款新游戏：填日志目录，再从规则库里选一条规则")
-        add_game_btn.clicked.connect(self.add_game_requested.emit)
-        head.addWidget(add_game_btn)
         new_rule_btn = QPushButton("新建规则…")
         new_rule_btn.setObjectName("primary")
         new_rule_btn.setCursor(Qt.PointingHandCursor)
@@ -535,102 +552,202 @@ class MethodsView(QWidget):
         head.addWidget(new_rule_btn)
         card.lay.addLayout(head)
         card.lay.addWidget(_label(
-            "规则只描述「怎么算日常完成」；游戏只决定「看哪个日志目录」。"
-            "一条规则可以被多款游戏共用，改一次全部生效。"
-            "新增游戏时先从下面挑一条规则，库里没有就先建一条。",
+            "规则只描述「怎么算日常完成」；一条规则可以被多款游戏共用，改一次全部生效。",
             11, "text_muted", wrap=True))
         body.addWidget(card)
 
-        # ---------- 规则库 ----------
-        self.rules_title = _label("", 15, "text", bold=True)
-        body.addWidget(self.rules_title)
-        rules_holder = QWidget()
-        self.rules_lay = QVBoxLayout(rules_holder)
-        self.rules_lay.setContentsMargins(2, 0, 2, 0)
-        self.rules_lay.setSpacing(12)
-        body.addWidget(rules_holder)
+        holder = QWidget()
+        self.rows_lay = QVBoxLayout(holder)
+        self.rows_lay.setContentsMargins(2, 0, 2, 0)
+        self.rows_lay.setSpacing(12)
+        body.addWidget(holder)
+        body.addStretch(1)
 
-        # ---------- 游戏 → 规则 ----------
-        self.games_title = _label("", 15, "text", bold=True)
-        body.addWidget(self.games_title)
-        body.addWidget(_label(
+        self.refresh(cfg)
+
+    def refresh(self, cfg: dict | None = None) -> None:
+        if cfg is not None:
+            self.cfg = cfg
+        rules = core.get_rules(self.cfg)
+        _clear_layout(self.rows_lay)
+        for r in rules:
+            row = RuleRow(r, core.rule_usage(self.cfg, r["id"]))
+            row.edit_requested.connect(self.edit_rule_requested)
+            row.duplicate_requested.connect(self.duplicate_rule_requested)
+            row.delete_requested.connect(self.delete_rule_requested)
+            self.rows_lay.addWidget(row)
+        self.count.setText(f"{len(rules)} 条")
+
+
+class GameRulesView(QWidget):
+    """判定规则 · 游戏 → 规则（独立子页）。"""
+
+    add_game_requested = Signal()
+    game_rule_changed = Signal(str, str)
+    game_remove_requested = Signal(str)
+    game_threshold_changed = Signal(str, int)
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
+        self.cfg = cfg
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = _page_scroll()
+        body = scroll.lay
+        outer.addWidget(scroll)
+
+        card = Card(padding=16)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.title = _label("游戏 → 规则", 15, "text", bold=True)
+        head.addWidget(self.title)
+        self.count = _label("", 11, "text_muted")
+        head.addWidget(self.count)
+        head.addStretch(1)
+        add_game_btn = QPushButton("添加游戏…")
+        add_game_btn.setObjectName("soft")
+        add_game_btn.setCursor(Qt.PointingHandCursor)
+        add_game_btn.setFixedHeight(30)
+        add_game_btn.setToolTip("添加一款新游戏：填日志目录，再从规则库里选一条规则")
+        add_game_btn.clicked.connect(self.add_game_requested.emit)
+        head.addWidget(add_game_btn)
+        card.lay.addLayout(head)
+        card.lay.addWidget(_label(
             "每行是一款游戏和它引用的规则；改下拉即时换规则，并只重新检查这一款。"
             "右侧的「日志阈值」是这款游戏自己的 debug 日志体积上限，默认 "
             f"{core.DEFAULT_LOG_THRESHOLD_MB}MB。",
-            10, "text_muted", wrap=True))
-        games_holder = QWidget()
-        self.games_lay = QVBoxLayout(games_holder)
-        self.games_lay.setContentsMargins(2, 0, 2, 0)
-        self.games_lay.setSpacing(10)
-        body.addWidget(games_holder)
+            11, "text_muted", wrap=True))
+        body.addWidget(card)
 
-        # ---------- 文件夹关键词映射（异常监控用，原在设置页） ----------
-        self.fm_btn = QPushButton("管理…")
-        self.fm_btn.setObjectName("ghost")
-        self.fm_btn.setCursor(Qt.PointingHandCursor)
-        self.fm_btn.setFixedHeight(30)
-        self.fm_btn.setToolTip("My-maawork 里的程序文件夹名对应到游戏名，用于异常监控")
-        self.fm_btn.clicked.connect(self.folder_map_manage_requested.emit)
-        self.fm_row = SettingRow(
-            "folder", "文件夹关键词映射", "",
-            self.fm_btn)
-        body.addWidget(self.fm_row)
-
+        holder = QWidget()
+        self.rows_lay = QVBoxLayout(holder)
+        self.rows_lay.setContentsMargins(2, 0, 2, 0)
+        self.rows_lay.setSpacing(10)
+        body.addWidget(holder)
         body.addStretch(1)
 
+        self.refresh(cfg)
+
+    def refresh(self, cfg: dict | None = None) -> None:
+        if cfg is not None:
+            self.cfg = cfg
+        rules = core.get_rules(self.cfg)
+        games = core.all_games(self.cfg)
+        _clear_layout(self.rows_lay)
+        for g in games:
+            row = GameRuleRow(self.cfg, g, rules, core.rule_id_for(self.cfg, g.name))
+            row.rule_changed.connect(self.game_rule_changed)
+            row.remove_requested.connect(self.game_remove_requested)
+            row.threshold_changed.connect(self.game_threshold_changed)
+            self.rows_lay.addWidget(row)
+        n_custom = sum(1 for g in games if g not in core.DAILY_GAMES)
+        self.count.setText(f"{len(games)} 款"
+                           + (f"（含 {n_custom} 款自定义）" if n_custom else ""))
+
+
+class FolderMapView(QWidget):
+    """判定规则 · 文件夹关键词映射（独立子页）。"""
+
+    folder_map_manage_requested = Signal()
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
         self.cfg = cfg
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = _page_scroll()
+        body = scroll.lay
+        outer.addWidget(scroll)
+
+        btn = QPushButton("管理…")
+        btn.setObjectName("ghost")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedHeight(30)
+        btn.setToolTip("增删自定义映射；内置的 13 条只读，可被同名自定义覆盖")
+        btn.clicked.connect(self.folder_map_manage_requested.emit)
+        self.row = SettingRow("folder", "文件夹关键词映射", "", btn)
+        body.addWidget(self.row)
+
+        self.builtin_title = _label("", 13, "text", bold=True)
+        body.addWidget(self.builtin_title)
+        builtin_box = QWidget()
+        flat(builtin_box)
+        self.builtin_grid = QGridLayout(builtin_box)
+        self.builtin_grid.setContentsMargins(2, 0, 2, 0)
+        self.builtin_grid.setHorizontalSpacing(8)
+        self.builtin_grid.setVerticalSpacing(8)
+        body.addWidget(builtin_box)
+
+        self.custom_title = _label("", 13, "text", bold=True)
+        body.addWidget(self.custom_title)
+        custom_box = QWidget()
+        flat(custom_box)
+        self.custom_grid = QGridLayout(custom_box)
+        self.custom_grid.setContentsMargins(2, 0, 2, 0)
+        self.custom_grid.setHorizontalSpacing(8)
+        self.custom_grid.setVerticalSpacing(8)
+        body.addWidget(custom_box)
+        self.custom_hint = _label("", 11, "text_muted", wrap=True)
+        body.addWidget(self.custom_hint)
+        body.addStretch(1)
+
         self.refresh(cfg)
 
     @staticmethod
-    def _clear(lay: QVBoxLayout) -> None:
-        while lay.count():
-            item = lay.takeAt(0)
+    def _fill(grid: QGridLayout, items: list) -> None:
+        while grid.count():
+            item = grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.hide()
                 w.deleteLater()
+        for i, text in enumerate(items):
+            grid.addWidget(_pill(text), i // 2, i % 2, Qt.AlignLeft)
 
-    def refresh(self, cfg: dict) -> None:
-        """按配置重建规则列表与游戏绑定列表。"""
-        self.cfg = cfg
-        rules = core.get_rules(cfg)
-        games = core.all_games(cfg)
-
-        self._clear(self.rules_lay)
-        for r in rules:
-            row = RuleRow(r, core.rule_usage(cfg, r["id"]))
-            row.edit_requested.connect(self.edit_rule_requested)
-            row.duplicate_requested.connect(self.duplicate_rule_requested)
-            row.delete_requested.connect(self.delete_rule_requested)
-            self.rules_lay.addWidget(row)
-
-        self._clear(self.games_lay)
-        for g in games:
-            row = GameRuleRow(cfg, g, rules, core.rule_id_for(cfg, g.name))
-            row.rule_changed.connect(self.game_rule_changed)
-            row.remove_requested.connect(self.game_remove_requested)
-            row.threshold_changed.connect(self.game_threshold_changed)
-            self.games_lay.addWidget(row)
-
-        n_custom = sum(1 for g in games if g not in core.DAILY_GAMES)
-        self.rules_title.setText(f"规则库 · {len(rules)} 条")
-        self.games_title.setText(
-            f"游戏 → 规则 · {len(games)} 款"
-            + (f"（含 {n_custom} 款自定义）" if n_custom else ""))
-        self._refresh_folder_map()
-
-    def _refresh_folder_map(self) -> None:
+    def refresh(self, cfg: dict | None = None) -> None:
+        if cfg is not None:
+            self.cfg = cfg
         ck = self.cfg.get("check") or {}
-        fm = ck.get("folder_map") or {}
-        n_over = len(ck.get("thresholds") or {})
-        text = "、".join(f"{k}→{v}" for k, v in sorted(fm.items())) \
-            or f"使用内置映射（{len(core.FOLDER_NAME_MAP)} 条）"
-        extra = f"　·　{n_over} 款自定义了日志阈值" if n_over else ""
-        self.fm_row.set_desc(
-            f"My-maawork 程序文件夹名对应到游戏名，用于异常监控；{text}{extra}")
+        custom = {str(k): str(v) for k, v in (ck.get("folder_map") or {}).items()}
+        builtin = {k: v for k, v in core.FOLDER_NAME_MAP.items() if k not in custom}
+
+        self.row.set_desc(
+            f"My-maawork 程序文件夹名对应到游戏名，用于异常监控；"
+            f"内置 {len(core.FOLDER_NAME_MAP)} 条，自定义 {len(custom)} 条。")
+
+        self.builtin_title.setText(f"内置映射 · {len(builtin)} 条")
+        self._fill(self.builtin_grid, [f"{k} → {v}" for k, v in builtin.items()])
+
+        self.custom_title.setText(f"自定义映射 · {len(custom)} 条")
+        self._fill(self.custom_grid, [f"{k} → {v}" for k, v in sorted(custom.items())])
+        self.custom_hint.setText(
+            "" if custom else "还没有自定义映射；点右上「管理…」添加，同名会覆盖内置。")
+        self.custom_hint.setVisible(not custom)
+
+
+class MethodsPages:
+    """判定规则的三个子页（侧栏二级菜单用）。"""
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.folder = FolderMapView(cfg)
+        self.rules = RulesView(cfg)
+        self.games = GameRulesView(cfg)
+
+    def refresh(self, cfg: dict | None = None) -> None:
+        if cfg is not None:
+            self.cfg = cfg
+        self.rules.refresh(self.cfg)
+        self.games.refresh(self.cfg)
+        self.folder.refresh(self.cfg)
 
     def refresh_theme(self) -> None:
-        self.refresh(self.cfg)
+        self.refresh()
+
+    def _refresh_folder_map(self) -> None:
+        self.folder.refresh(self.cfg)
 
 
 class DashboardView(QWidget):
@@ -1324,6 +1441,247 @@ class FolderMapDialog(_GameListDialog):
         return out
 
 
+class _ElideLabel(QLabel):
+    """单行路径标签：按可用宽度中间省略，完整路径放 tooltip。"""
+
+    def __init__(self, text: str = "", size: int = 12, color_key: str = "text"):
+        super().__init__()
+        self._full = text
+        f = QFont("Microsoft YaHei UI")
+        f.setPixelSize(size)
+        self.setFont(f)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        tint(self, getattr(THEME.p, color_key))
+        self.set_path(text)
+
+    def set_path(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._apply()
+
+    def _apply(self) -> None:
+        fm = self.fontMetrics()
+        super().setText(fm.elidedText(self._full, Qt.ElideMiddle, max(40, self.width())))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._apply()
+
+
+class ScanDirDialog(ThemedDialog):
+    """设置 → 扫描目录：勾选参与扫描的根目录，并可排除其中的子目录。"""
+
+    def __init__(self, parent, dirs: list, excludes: list):
+        super().__init__(parent, "扫描目录", 660)
+        self._dirs = [(str(d), True) for d in (dirs or [])]
+        self._excl = [str(x) for x in (excludes or [])]
+
+        self.body.addWidget(_label(
+            "程序在这些目录里找 on_error / screencap 异常文件夹，以及 My-maawork 下的各游戏目录。"
+            "可以加多个（比如别的盘），勾选决定参不参与；不想被扫的子目录放到下面的排除列表。",
+            11, "text_muted", wrap=True))
+
+        self.body.addWidget(_label("扫描根目录", 12, "text", bold=True))
+        self.dirs_lay = QVBoxLayout()
+        self.dirs_lay.setContentsMargins(0, 0, 0, 0)
+        self.dirs_lay.setSpacing(6)
+        self._dirs_scroll = self._list_scroll(self.dirs_lay, 3)
+        self.body.addWidget(self._dirs_scroll)
+
+        add_line = QHBoxLayout()
+        add_line.setSpacing(8)
+        add_dir = QPushButton("添加目录…")
+        add_dir.setObjectName("soft")
+        add_dir.setCursor(Qt.PointingHandCursor)
+        add_dir.setFixedHeight(32)
+        add_dir.clicked.connect(self._add_dir)
+        restore = QPushButton("恢复默认")
+        restore.setObjectName("ghost")
+        restore.setCursor(Qt.PointingHandCursor)
+        restore.setFixedHeight(32)
+        restore.setToolTip(f"恢复成 {core.DEFAULT_SCAN_DIRS[0]}")
+        restore.clicked.connect(self._restore)
+        self.dir_hint = _label("", 10, "text_muted")
+        add_line.addWidget(add_dir)
+        add_line.addWidget(restore)
+        add_line.addWidget(self.dir_hint, 1)
+        self.body.addLayout(add_line)
+
+        self.body.addWidget(_label("排除的子目录", 12, "text", bold=True))
+        self.body.addWidget(_label(
+            "选中的子目录会整棵跳过（不扫异常文件夹，也不当游戏目录）；"
+            "只写文件夹名（如 MFAAKes）就排除所有同名的。", 10, "text_muted", wrap=True))
+        self.excl_lay = QVBoxLayout()
+        self.excl_lay.setContentsMargins(0, 0, 0, 0)
+        self.excl_lay.setSpacing(6)
+        self._excl_scroll = self._list_scroll(self.excl_lay, 2)
+        self.body.addWidget(self._excl_scroll)
+
+        add_excl = QPushButton("排除一个子目录…")
+        add_excl.setObjectName("soft")
+        add_excl.setCursor(Qt.PointingHandCursor)
+        add_excl.setFixedHeight(32)
+        add_excl.clicked.connect(self._add_excl)
+        self.body.addWidget(add_excl, 0, Qt.AlignLeft)
+
+        self._rebuild_dirs()
+        self._rebuild_excl()
+        self.add_footer()
+
+    # ---------- 列表外壳 ----------
+    def _list_scroll(self, lay: QVBoxLayout, rows: int) -> QScrollArea:
+        holder = QWidget()
+        flat(holder)
+        holder.setLayout(lay)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sc.viewport().setStyleSheet(
+            "QScrollArea > QWidget { background: transparent; }")
+        sc.setWidget(holder)
+        sc.setFixedHeight(max(1, rows) * 40 + 6)
+        return sc
+
+    @staticmethod
+    def _fit(sc: QScrollArea, n: int) -> None:
+        """列表高度跟着条目数走，最多 3 行，避免一大片空白。"""
+        rows = min(3, max(1, n))
+        sc.setFixedHeight(rows * 40 + 6 if n else 44)
+
+    @staticmethod
+    def _clear(lay: QVBoxLayout) -> None:
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+            elif item.layout() is not None:
+                ScanDirDialog._clear(item.layout())
+
+    def _row_frame(self) -> QFrame:
+        p = THEME.p
+        row = QFrame()
+        row.setFixedHeight(40)
+        scoped(row, f"background: {rgba(p.text, 0.05)}; border: none;"
+                    f"border-radius: 10px;")
+        return row
+
+    # ---------- 根目录 ----------
+    def _rebuild_dirs(self) -> None:
+        self._clear(self.dirs_lay)
+        p = THEME.p
+        if not self._dirs:
+            self.dirs_lay.addWidget(_label("还没有扫描目录，点下面「添加目录…」", 12, "warning"))
+        for i, (path, on) in enumerate(self._dirs):
+            row = self._row_frame()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(12, 0, 8, 0)
+            h.setSpacing(10)
+            cb = QCheckBox()
+            cb.setChecked(on)
+            cb.setCursor(Qt.PointingHandCursor)
+            cb.setToolTip("勾选即参与扫描")
+            cb.toggled.connect(lambda v, idx=i: self._toggle_dir(idx, v))
+            h.addWidget(cb)
+            miss = not os.path.isdir(path)
+            lbl = _ElideLabel(path, 12, "danger" if miss else "text")
+            if miss:
+                lbl.setToolTip(f"{path}（目录不存在，检查一下盘符或路径）")
+            h.addWidget(lbl, 1)
+            if miss:
+                h.addWidget(Chip("不存在", p.warning))
+            b = QPushButton("删除")
+            b.setObjectName("ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(28)
+            b.clicked.connect(lambda _=False, idx=i: self._remove_dir(idx))
+            h.addWidget(b)
+            self.dirs_lay.addWidget(row)
+        self.dirs_lay.addStretch(1)
+        active = sum(1 for _, on in self._dirs if on)
+        self.dir_hint.setText(f"共 {len(self._dirs)} 个，{active} 个参与扫描"
+                              if self._dirs else "")
+        self._fit(self._dirs_scroll, len(self._dirs))
+
+    def _toggle_dir(self, idx: int, on: bool) -> None:
+        if 0 <= idx < len(self._dirs):
+            self._dirs[idx] = (self._dirs[idx][0], on)
+        active = sum(1 for _, o in self._dirs if o)
+        self.dir_hint.setText(f"共 {len(self._dirs)} 个，{active} 个参与扫描")
+
+    def _remove_dir(self, idx: int) -> None:
+        if 0 <= idx < len(self._dirs):
+            self._dirs.pop(idx)
+        self._rebuild_dirs()
+
+    def _add_dir(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        start = self._dirs[0][0] if self._dirs else "D:\\"
+        path = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", start)
+        if not path:
+            return
+        path = os.path.normpath(path)
+        if path in [x for x, _ in self._dirs]:
+            self.dir_hint.setText("这个目录已经在列表里了")
+            return
+        self._dirs.append((path, True))
+        self._rebuild_dirs()
+
+    def _restore(self) -> None:
+        self._dirs = [(core.DEFAULT_SCAN_DIRS[0], True)]
+        self._excl = []
+        self._rebuild_dirs()
+        self._rebuild_excl()
+
+    # ---------- 排除项 ----------
+    def _rebuild_excl(self) -> None:
+        self._clear(self.excl_lay)
+        if not self._excl:
+            self.excl_lay.addWidget(_label("暂无排除，所有子目录都会被扫描", 11, "text_muted"))
+        for i, path in enumerate(self._excl):
+            row = self._row_frame()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(12, 0, 8, 0)
+            h.setSpacing(10)
+            h.addWidget(Glyph("delete", 14, THEME.p.text_dim))
+            h.addWidget(_ElideLabel(path, 12, "text"), 1)
+            b = QPushButton("移出")
+            b.setObjectName("ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(28)
+            b.setToolTip("从排除列表移除，重新参与扫描")
+            b.clicked.connect(lambda _=False, idx=i: self._remove_excl(idx))
+            h.addWidget(b)
+            self.excl_lay.addWidget(row)
+        self.excl_lay.addStretch(1)
+        self._fit(self._excl_scroll, len(self._excl))
+
+    def _remove_excl(self, idx: int) -> None:
+        if 0 <= idx < len(self._excl):
+            self._excl.pop(idx)
+        self._rebuild_excl()
+
+    def _add_excl(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        root = next((x for x, on in self._dirs if on and os.path.isdir(x)), "D:\\")
+        path = QFileDialog.getExistingDirectory(self, "选择要排除的子目录", root)
+        if not path:
+            return
+        path = os.path.normpath(path)
+        if path in self._excl:
+            return
+        self._excl.append(path)
+        self._rebuild_excl()
+
+    # ---------- 结果 ----------
+    def values(self) -> dict:
+        return {"dirs": [p for p, on in self._dirs if on],
+                "excludes": list(self._excl)}
+
+
 class ExcludeDialog(ThemedDialog):
     """管理排除名单：勾选的游戏不再参与本程序的检查。"""
 
@@ -1393,6 +1751,7 @@ class SettingsPage(QWidget):
     autostart_requested = Signal(bool)
     test_ding_requested = Signal()
     exclude_manage_requested = Signal()
+    scan_dir_manage_requested = Signal()
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
@@ -1696,6 +2055,11 @@ class SettingsPage(QWidget):
                   "关闭后跳过文件夹异常检测（日常失败仍会清零）",
                   self.err_toggle)
 
+        scan_btn = self._small_btn("管理…", self.scan_dir_manage_requested.emit)
+        self.scan_row = self._row(lay, "folder", "扫描目录",
+                                  self._scan_desc(), scan_btn)
+        self.scan_row.setToolTip("可以加多个根目录（比如别的盘），也可以排除其中的子目录")
+
         self.thr_spin = NumberStepper(
             int(ck.get("threshold_mb", core.DEFAULT_LOG_THRESHOLD_MB)),
             1, 500, 1, " MB", 108)
@@ -1711,6 +2075,15 @@ class SettingsPage(QWidget):
             "、".join(excluded) if excluded else "暂无排除，全部游戏都参与检查",
             excl_btn)
 
+    def _scan_desc(self) -> str:
+        dirs = core.get_scan_dirs(self.cfg)
+        excl = core.get_scan_excludes(self.cfg)
+        if not dirs:
+            return "还没有扫描目录；异常监控会跳过，点右侧「管理…」添加"
+        names = "、".join(os.path.basename(os.path.normpath(d)) or d for d in dirs)
+        tail = f"；已排除 {len(excl)} 项" if excl else ""
+        return f"共 {len(dirs)} 个目录：{names}{tail}"
+
     def refresh_check(self) -> None:
         """右键改了阈值 / 排除后，刷新设置页显示。"""
         ck = self.cfg.setdefault("check", {})
@@ -1721,6 +2094,8 @@ class SettingsPage(QWidget):
         excluded = core.get_excluded(self.cfg)
         self.excl_row.set_desc("、".join(excluded) if excluded
                                else "暂无排除，全部游戏都参与检查")
+        if hasattr(self, "scan_row"):
+            self.scan_row.set_desc(self._scan_desc())
         self.cache_edit.setText(ck.get("cache_dir") or r"D:\Automate\Cache")
 
     def _save_check(self, *_):
@@ -1743,7 +2118,8 @@ class SettingsPage(QWidget):
         self._row(lay, "folder", "配置目录", core.config_dir(),
                   self._small_btn("打开", lambda: core.open_in_explorer(core.config_dir())))
         self._row(lay, "check", "检查范围",
-                  f"日常检测 {len(core.all_games(self.cfg))} 款游戏 · 异常监控 {core.BASE_DIR}")
+                  f"日常检测 {len(core.all_games(self.cfg))} 款游戏 · "
+                  f"异常监控 {len(core.get_scan_dirs(self.cfg))} 个目录")
         self._row(lay, "apps", "快捷键", "Ctrl+1/2/3/4 切换页面　F5 开始检查")
 
     def _small_btn(self, text: str, slot) -> QPushButton:

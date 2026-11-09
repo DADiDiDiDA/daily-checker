@@ -21,8 +21,8 @@ import core
 import autostart
 from backdrop import BACKDROP
 from pages import (AddGameDialog, DashboardView, ExcludeDialog, FolderMapDialog, GamesPage,
-                   GameRuleDialog, MethodsView, NotifyPreviewDialog, RuleDialog, SettingsPage,
-                   ThresholdDialog, ThemedDialog, _label)
+                   GameRuleDialog, MethodsPages, NotifyPreviewDialog, RuleDialog, ScanDirDialog,
+                   SettingsPage, ThresholdDialog, ThemedDialog, _label)
 from theme import build_qss, flat, qc, scoped, tint, GLYPH, THEME
 from tray import TrayIcon
 from widgets import NavButton, Toast
@@ -320,12 +320,34 @@ class MainWindow(QWidget):
         self.nav_group = []
         self.nav_home = NavButton("home", "home", "总览")
         self.nav_games = NavButton("games", "apps", "游戏列表")
-        self.nav_methods = NavButton("methods", "check", "判定规则")
+        self.nav_methods = NavButton("methods", "check", "判定规则", chevron=True)
         self.nav_settings = NavButton("settings", "settings", "设置")
-        for btn in (self.nav_home, self.nav_games, self.nav_methods, self.nav_settings):
+
+        self.nav_fm = NavButton("fm", "", "文件夹关键词映射", sub=True)
+        self.nav_rules = NavButton("rules", "", "规则库", sub=True)
+        self.nav_game_rules = NavButton("game_rules", "", "游戏 → 规则", sub=True)
+        self.sub_navs = [self.nav_fm, self.nav_rules, self.nav_game_rules]
+        self.sub_holder = QWidget()
+        flat(self.sub_holder)
+        sub_lay = QVBoxLayout(self.sub_holder)
+        sub_lay.setContentsMargins(0, 0, 0, 2)
+        sub_lay.setSpacing(0)
+        for b in self.sub_navs:
+            sub_lay.addWidget(b)
+
+        for btn in (self.nav_home, self.nav_games, self.nav_methods):
             btn.clicked.connect(self._on_nav)
             self.nav_group.append(btn)
             sl.addWidget(btn)
+        sl.addWidget(self.sub_holder)
+        self.nav_group.extend(self.sub_navs)
+        for btn in self.sub_navs:
+            btn.clicked.connect(self._on_nav)
+        self.nav_settings.clicked.connect(self._on_nav)
+        self.nav_group.append(self.nav_settings)
+        sl.addWidget(self.nav_settings)
+        self._last_methods_key = "fm"
+        self._set_methods_expanded(True)
 
         sl.addStretch(1)
 
@@ -402,22 +424,23 @@ class MainWindow(QWidget):
         self.page_games.sort_changed.connect(self.on_sort_changed)
         self.page_games.order_changed.connect(self.on_order_changed)
 
-        self.page_methods = MethodsView(self.cfg)
-        self.page_methods.new_rule_requested.connect(self.new_rule)
-        self.page_methods.edit_rule_requested.connect(self.edit_rule)
-        self.page_methods.duplicate_rule_requested.connect(self.duplicate_rule)
-        self.page_methods.delete_rule_requested.connect(self.delete_rule)
-        self.page_methods.add_game_requested.connect(self.add_game)
-        self.page_methods.game_rule_changed.connect(self.set_game_rule)
-        self.page_methods.game_remove_requested.connect(self.remove_game)
-        self.page_methods.game_threshold_changed.connect(self.set_game_threshold)
-        self.page_methods.folder_map_manage_requested.connect(self.manage_folder_map)
+        self.page_methods = MethodsPages(self.cfg)
+        mp = self.page_methods
+        mp.rules.new_rule_requested.connect(self.new_rule)
+        mp.rules.edit_rule_requested.connect(self.edit_rule)
+        mp.rules.duplicate_rule_requested.connect(self.duplicate_rule)
+        mp.rules.delete_rule_requested.connect(self.delete_rule)
+        mp.games.add_game_requested.connect(self.add_game)
+        mp.games.game_rule_changed.connect(self.set_game_rule)
+        mp.games.game_remove_requested.connect(self.remove_game)
+        mp.games.game_threshold_changed.connect(self.set_game_threshold)
+        mp.folder.folder_map_manage_requested.connect(self.manage_folder_map)
 
         self.page_settings = SettingsPage(self.cfg)
         self._wire_settings(self.page_settings)
 
-        for page in (self.page_home, self.page_games, self.page_methods,
-                     self.page_settings):
+        for page in (self.page_home, self.page_games, mp.folder, mp.rules,
+                     mp.games, self.page_settings):
             wrap = QWidget()
             wl = QVBoxLayout(wrap)
             wl.setContentsMargins(22, 4, 18, 18)
@@ -431,7 +454,7 @@ class MainWindow(QWidget):
         # 键盘快捷键
         from PySide6.QtGui import QKeySequence, QShortcut
         for key, seq in (("home", "Ctrl+1"), ("games", "Ctrl+2"),
-                         ("methods", "Ctrl+3"), ("settings", "Ctrl+4")):
+                         ("rules", "Ctrl+3"), ("settings", "Ctrl+4")):
             sc = QShortcut(QKeySequence(seq), self)
             sc.activated.connect(lambda k=key: self._on_nav(k))
         QShortcut(QKeySequence("F5"), self).activated.connect(self.start_check)
@@ -442,6 +465,7 @@ class MainWindow(QWidget):
         page.autostart_requested.connect(self._set_autostart)
         page.test_ding_requested.connect(self._test_ding)
         page.exclude_manage_requested.connect(self.manage_excludes)
+        page.scan_dir_manage_requested.connect(self.manage_scan_dirs)
 
     # ---------- 主题 ----------
     def _sync_system_theme(self) -> None:
@@ -489,8 +513,8 @@ class MainWindow(QWidget):
 
     def _rebuild_settings(self) -> None:
         """主题变化后重建设置页（保证分组文字配色一致）。"""
-        idx = self.stack.indexOf(self._page_wraps[3])
-        old = self._page_wraps[3]
+        idx = self.PAGE_INDEX["settings"]
+        old = self._page_wraps[idx]
         new_page = SettingsPage(self.cfg)
         self._wire_settings(new_page)
         wrap = QWidget()
@@ -501,7 +525,7 @@ class MainWindow(QWidget):
         old.hide()                 # removeWidget 不隐藏，旧页会盖住新页闪一下
         self.stack.removeWidget(old)
         old.deleteLater()
-        self._page_wraps[3] = wrap
+        self._page_wraps[idx] = wrap
         self.page_settings = new_page
         if idx == self.stack.currentIndex():
             self.stack.setCurrentWidget(wrap)
@@ -618,14 +642,35 @@ class MainWindow(QWidget):
             self._bg_timer.start(120)
 
     # ---------- 导航 ----------
+    SUB_KEYS = ("fm", "rules", "game_rules")
+    TITLES = {"home": "总览", "games": "游戏列表", "fm": "判定规则 · 文件夹关键词映射",
+              "rules": "判定规则 · 规则库", "game_rules": "判定规则 · 游戏 → 规则",
+              "settings": "设置"}
+    PAGE_INDEX = {"home": 0, "games": 1, "fm": 2, "rules": 3,
+                  "game_rules": 4, "settings": 5}
+
+    def _set_methods_expanded(self, on: bool) -> None:
+        self.sub_holder.setVisible(on)
+        self.nav_methods.set_expanded(on)
+
     def _on_nav(self, key: str) -> None:
-        titles = {"home": "总览", "games": "游戏列表", "methods": "判定规则",
-                  "settings": "设置"}
-        idx = {"home": 0, "games": 1, "methods": 2, "settings": 3}[key]
-        self.stack.setCurrentIndex(idx)
+        if key == "methods":
+            # 点一级项：展开 / 收起二级菜单，并回到上次看的子页
+            on = not self.sub_holder.isVisible()
+            self._set_methods_expanded(on)
+            if not on:
+                return
+            key = self._last_methods_key
+        if key in self.SUB_KEYS:
+            self._last_methods_key = key
+            if not self.sub_holder.isVisible():
+                self._set_methods_expanded(True)
+        self.stack.setCurrentIndex(self.PAGE_INDEX[key])
         for nav in self.nav_group:
             nav.set_active(nav.key == key)
-        self.page_title.setText(titles[key])
+        # 二级项高亮时一级项不再重复铺底色，避免两块高亮叠在一起
+        self.nav_methods.set_active(False)
+        self.page_title.setText(self.TITLES[key])
 
     # ---------- 托盘 / 定时 ----------
     def _dev_shot(self, path: str) -> None:
@@ -713,8 +758,14 @@ class MainWindow(QWidget):
         n_err = sum(1 for i in self.games if i.has_error)
         n_fail = sum(1 for i in self.games
                      if i.scanned and i.daily == "failed" and not i.excluded)
+        dirs = core.get_scan_dirs(self.cfg)
+        if dirs:
+            first = os.path.basename(os.path.normpath(dirs[0])) or dirs[0]
+            scan = first + (f" 等 {len(dirs)} 个" if len(dirs) > 1 else "")
+        else:
+            scan = "未设置"
         self.side_status.setText(
-            f'<p style="margin:0;line-height:160%">监控目录 My-maawork</p>'
+            f'<p style="margin:0;line-height:160%">监控目录 {scan}</p>'
             f'<p style="margin:4px 0 0 0;line-height:160%">游戏 {len(self.games)} 款'
             f"　异常 {n_err}　未完成 {n_fail}</p>")
 
@@ -1150,6 +1201,30 @@ class MainWindow(QWidget):
         self.toast.show_text(
             f"文件夹映射已保存（{len(new)} 条自定义）" if new
             else "文件夹映射已清空，使用内置默认映射")
+
+    def manage_scan_dirs(self) -> None:
+        """设置页「扫描目录 · 管理」：勾选根目录、排除子目录。"""
+        dlg = ScanDirDialog(self, core.get_scan_dirs(self.cfg),
+                            core.get_scan_excludes(self.cfg))
+        if not dlg.exec():
+            return
+        v = dlg.values()
+        dirs = core.set_scan_dirs(self.cfg, v["dirs"])
+        excl = core.set_scan_excludes(self.cfg, v["excludes"])
+        self._save_cfg()
+        # 扫描范围变了，异常标记全部作废，重扫一遍
+        for it in self.games:
+            it.error_flags.clear()
+        if core.error_check_enabled(self.cfg) and core.get_target_folders(self.cfg):
+            self.engine.scan_errors(self.games)
+        for it in self.games:
+            self._refresh_game_row(it)
+        self.page_home.refresh_stats()
+        self._update_brand()
+        if hasattr(self, "page_settings"):
+            self.page_settings.refresh_check()
+        tail = f"，排除 {len(excl)} 项" if excl else ""
+        self.toast.show_text(f"扫描目录已保存：{len(dirs)} 个目录{tail}")
 
     def _refresh_game_row(self, it) -> None:
         home = getattr(self.page_home, "list", None)      # 总览页不一定有明细行

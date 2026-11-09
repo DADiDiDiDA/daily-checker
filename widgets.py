@@ -351,24 +351,33 @@ class Card(QFrame):
 
 
 class NavButton(QWidget):
-    """侧边栏导航项。"""
+    """侧边栏导航项。sub=True 为二级子项；chevron=True 时右侧画展开箭头。"""
 
     clicked = Signal(str)
 
-    def __init__(self, key: str, icon: str, text: str, parent=None):
+    def __init__(self, key: str, icon: str, text: str, parent=None,
+                 sub: bool = False, chevron: bool = False):
         super().__init__(parent)
         self.key = key
         self.icon_name = icon
         self.text = text
         self.active = False
+        self.sub = sub
+        self.chevron = chevron
+        self.expanded = False
         self._hover = False
-        self.setFixedHeight(42)
+        self.setFixedHeight(34 if sub else 42)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
 
     def set_active(self, on: bool) -> None:
         if self.active != on:
             self.active = on
+            self.update()
+
+    def set_expanded(self, on: bool) -> None:
+        if self.expanded != on:
+            self.expanded = on
             self.update()
 
     def enterEvent(self, e):
@@ -387,35 +396,63 @@ class NavButton(QWidget):
         p = THEME.p
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(8, 2, -8, -2)
+        left = 24 if self.sub else 8
+        rect = QRectF(self.rect()).adjusted(left, 2, -8, -2)
 
         if self.active:
             accent = qc(p.accent, 0.16 if p.dark else 0.13)
             painter.setPen(Qt.NoPen)
             painter.setBrush(accent)
             painter.drawRoundedRect(rect, p.radius_btn + 2, p.radius_btn + 2)
-            bar = QRectF(rect.left() - 8, rect.center().y() - 9, 3, 18)
-            painter.setBrush(qc(p.accent, 0.95))
-            painter.drawRoundedRect(bar, 1.5, 1.5)
+            if not self.sub:
+                bar = QRectF(rect.left() - 8, rect.center().y() - 9, 3, 18)
+                painter.setBrush(qc(p.accent, 0.95))
+                painter.drawRoundedRect(bar, 1.5, 1.5)
         elif self._hover:
             painter.setPen(Qt.NoPen)
             painter.setBrush(qc(p.text, 0.055))
             painter.drawRoundedRect(rect, p.radius_btn + 2, p.radius_btn + 2)
 
         color = p.text if self.active else (p.text if self._hover else p.text_dim)
-        f = QFont("Segoe Fluent Icons")
-        f.setPixelSize(17)
-        painter.setFont(f)
-        painter.setPen(QPen(qc(color if self.active else p.text_muted)))
-        painter.drawText(QRectF(rect.left() + 12, rect.top(), 24, rect.height()),
-                         Qt.AlignLeft | Qt.AlignVCenter, GLYPH.get(self.icon_name, ""))
+
+        if self.sub:
+            # 二级项：左侧一个小圆点，不再放图标，避免和一级项抢视线
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(qc(p.accent if self.active else p.text_muted, 0.9))
+            cy = rect.center().y()
+            painter.drawEllipse(QRectF(rect.left() + 12, cy - 2, 4, 4))
+        else:
+            f = QFont("Segoe Fluent Icons")
+            f.setPixelSize(17)
+            painter.setFont(f)
+            painter.setPen(QPen(qc(color if self.active else p.text_muted)))
+            painter.drawText(QRectF(rect.left() + 12, rect.top(), 24, rect.height()),
+                             Qt.AlignLeft | Qt.AlignVCenter, GLYPH.get(self.icon_name, ""))
 
         f2 = QFont("Microsoft YaHei UI")
-        f2.setPixelSize(14)
+        f2.setPixelSize(13 if self.sub else 14)
         f2.setWeight(QFont.DemiBold if self.active else QFont.Normal)
         painter.setFont(f2)
         painter.setPen(QPen(qc(color)))
-        painter.drawText(rect.adjusted(44, 0, -8, 0), Qt.AlignLeft | Qt.AlignVCenter, self.text)
+        text_left = 26 if self.sub else 44
+        painter.drawText(rect.adjusted(text_left, 0, -18 if self.chevron else -8, 0),
+                         Qt.AlignLeft | Qt.AlignVCenter, self.text)
+
+        if self.chevron:
+            cx = rect.right() - 10
+            cy = rect.center().y()
+            path = QPainterPath()
+            if self.expanded:
+                path.moveTo(cx - 4, cy - 1.5)
+                path.lineTo(cx, cy + 2.5)
+                path.lineTo(cx + 4, cy - 1.5)
+            else:
+                path.moveTo(cx - 2, cy - 4)
+                path.lineTo(cx + 2, cy)
+                path.lineTo(cx - 2, cy + 4)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(qc(p.text_muted), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawPath(path)
         painter.end()
 
 
