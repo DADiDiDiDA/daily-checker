@@ -1,0 +1,20 @@
+__pycache__/
+build/
+dist/
+*.pyc
+*.spec
+
+# 本地配置与运行记录（含钉钉 webhook / 密钥，绝对不要提交）
+config/
+records.json
+crash.log
+*.log
+
+# 开发用截图与测试脚本
+_test/
+shot_*.png
+preview_*.png
+diag_*.png
+exe_*.png
+chk_*.png
+*.bak
