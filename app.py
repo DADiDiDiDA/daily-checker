@@ -472,7 +472,7 @@ class MainWindow(QWidget):
         mp.rules.duplicate_rule_requested.connect(self.duplicate_rule)
         mp.rules.delete_rule_requested.connect(self.delete_rule)
         mp.games.add_game_requested.connect(self.add_game)
-        mp.games.edit_requested.connect(self.edit_game)
+        mp.games.game_edit_requested.connect(self.edit_game)
         mp.games.game_rule_changed.connect(self.set_game_rule)
         mp.games.game_remove_requested.connect(self.remove_game)
         mp.games.game_threshold_changed.connect(self.set_game_threshold)

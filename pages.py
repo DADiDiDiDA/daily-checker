@@ -640,6 +640,7 @@ class GameRulesView(QWidget):
     game_rule_changed = Signal(str, str)
     game_remove_requested = Signal(str)
     game_threshold_changed = Signal(str, int)
+    game_edit_requested = Signal(str)  # 编辑已有游戏（改自动化程序目录等）
     config_changed = Signal()          # 日志阈值总开关 / 默认阈值变了
 
     def __init__(self, cfg: dict, parent=None):
@@ -740,6 +741,7 @@ class GameRulesView(QWidget):
             row.rule_changed.connect(self.game_rule_changed)
             row.remove_requested.connect(self.game_remove_requested)
             row.threshold_changed.connect(self.game_threshold_changed)
+            row.edit_requested.connect(self.game_edit_requested)
             self.rows_lay.addWidget(row)
         n_custom = sum(1 for g in games if g not in core.DAILY_GAMES)
         self.count.setText(f"{len(games)} 款"
