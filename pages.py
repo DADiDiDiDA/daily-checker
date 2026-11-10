@@ -694,6 +694,7 @@ class FolderMapView(QWidget):
     """判定规则 · 文件夹关键词映射（独立子页）。"""
 
     folder_map_manage_requested = Signal()
+    log_folders_changed = Signal()
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
@@ -713,6 +714,34 @@ class FolderMapView(QWidget):
         btn.clicked.connect(self.folder_map_manage_requested.emit)
         self.row = SettingRow("folder", "文件夹关键词映射", "", btn)
         body.addWidget(self.row)
+
+        # 日志文件夹判定：只在程序根目录下这几个文件夹里查关键字 / 目标文件
+        lf_box = QWidget()
+        flat(lf_box)
+        lfl = QVBoxLayout(lf_box)
+        # 与卡片标题文字左对齐（图标 26px + 间距 13px 之后）
+        lfl.setContentsMargins(39, 0, 0, 0)
+        lfl.setSpacing(8)
+        lf_line = QHBoxLayout()
+        lf_line.setSpacing(10)
+        self.lf_toggle = ToggleSwitch(core.log_folder_check_enabled(cfg))
+        self.lf_toggle.toggled.connect(self._save_log_folders)
+        self.lf_edit = QLineEdit("，".join(core.get_log_folders(cfg)))
+        self.lf_edit.setPlaceholderText("logs，log，debug，.log")
+        self.lf_edit.setMinimumHeight(30)
+        self.lf_edit.editingFinished.connect(self._save_log_folders)
+        lf_line.addWidget(self.lf_toggle)
+        lf_line.addWidget(self.lf_edit, 1)
+        lfl.addLayout(lf_line)
+        lfl.addWidget(_label(
+            "相对游戏程序根目录，只填文件夹名（逗号分隔）；每个文件夹只读顶层文件，"
+            "不递归子目录。规则库里单条规则也可以单独指定，留空则跟随这里。",
+            11, "text_muted", wrap=True))
+        self.lf_row = SettingRow(
+            "folder", "日志文件夹判定",
+            "启用后只在这些文件夹里找关键字 / 检查目标文件，不扫描程序的其它文件夹",
+            None, lf_box)
+        body.addWidget(self.lf_row)
 
         self.builtin_title = _label("", 13, "text", bold=True)
         body.addWidget(self.builtin_title)
@@ -750,10 +779,23 @@ class FolderMapView(QWidget):
         for i, text in enumerate(items):
             grid.addWidget(_pill(text), i // 2, i % 2, Qt.AlignLeft)
 
+    def _save_log_folders(self, *_):
+        ck = self.cfg.setdefault("check", {})
+        ck["log_folder_check"] = self.lf_toggle.isChecked()
+        core.set_log_folders(self.cfg, self.lf_edit.text())
+        self.lf_edit.setText("，".join(core.get_log_folders(self.cfg)))
+        self.lf_edit.setEnabled(self.lf_toggle.isChecked())
+        self.log_folders_changed.emit()
+
     def refresh(self, cfg: dict | None = None) -> None:
         if cfg is not None:
             self.cfg = cfg
         ck = self.cfg.get("check") or {}
+        self.lf_toggle.blockSignals(True)
+        self.lf_toggle.setChecked(core.log_folder_check_enabled(self.cfg))
+        self.lf_toggle.blockSignals(False)
+        self.lf_edit.setText("，".join(core.get_log_folders(self.cfg)))
+        self.lf_edit.setEnabled(self.lf_toggle.isChecked())
         custom = {str(k): str(v) for k, v in (ck.get("folder_map") or {}).items()}
         builtin = {k: v for k, v in core.FOLDER_NAME_MAP.items() if k not in custom}
 
@@ -801,6 +843,8 @@ class DashboardView(QWidget):
     cancel_requested = Signal()
     notify_requested = Signal()
     goto_games = Signal()
+    fixed_requested = Signal(str)          # 切换某个游戏的「已修复」标记
+    summary_sort_changed = Signal(str)     # 关注列表排序方式
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -864,8 +908,18 @@ class DashboardView(QWidget):
         self.summary_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         sl = QVBoxLayout()
         sl.setSpacing(7)
+        head = QHBoxLayout()
+        head.setSpacing(8)
         self.summary_title = _label("关注列表", 13, "text", bold=True)
-        sl.addWidget(self.summary_title)
+        head.addWidget(self.summary_title)
+        head.addStretch(1)
+        self.summary_sort = ThemedCombo(core.SUMMARY_SORTS,
+                                        core.DEFAULT_SUMMARY_SORT, 132)
+        self.summary_sort.setToolTip(
+            "关注列表排序：状态优先 = 异常 → 未完成 → 已修复（倒数第二）→ 存疑（最后）")
+        self.summary_sort.changed.connect(self.summary_sort_changed.emit)
+        head.addWidget(self.summary_sort)
+        sl.addLayout(head)
         self.summary_lay = QGridLayout()
         self.summary_lay.setSpacing(6)
         sl.addLayout(self.summary_lay)
@@ -881,6 +935,23 @@ class DashboardView(QWidget):
         self._running = False
         self.last_check_time = ""
         self._items: list = []
+        self._cfg: dict = {}
+        self._summary_sort = core.DEFAULT_SUMMARY_SORT
+        self._badge_seq = 0
+
+    # ---------- 配置 ----------
+    def set_config(self, cfg: dict) -> None:
+        """主窗口把配置注入总览页（标记、排序、开关都要读它）。"""
+        self._cfg = cfg
+        self._summary_sort = core.get_summary_sort(cfg)
+        self.summary_sort.set_value(self._summary_sort)
+        self.refresh_stats()
+
+    def set_summary_sort(self, mode: str) -> None:
+        if mode in dict(core.SUMMARY_SORTS):
+            self._summary_sort = mode
+            self.summary_sort.set_value(mode)
+            self._rebuild_summary()
 
     # ---------- 交互 ----------
     def _on_check_clicked(self) -> None:
@@ -922,12 +993,16 @@ class DashboardView(QWidget):
                 break
         self.refresh_stats()
 
+    def _suspect_of(self, i) -> bool:
+        """关掉日志阈值检查后，旧的存疑结果不再显示。"""
+        return bool(i.suspicious and core.log_threshold_check_enabled(self._cfg))
+
     def refresh_stats(self) -> None:
         items = self._items
         err = sum(1 for i in items if i.has_error)
         failed = sum(1 for i in items
                      if i.scanned and i.daily == "failed" and not i.excluded)
-        susp = sum(1 for i in items if i.suspicious and not i.excluded)
+        susp = sum(1 for i in items if self._suspect_of(i) and not i.excluded)
         self.tile_error.set_values(str(err))
         self.tile_failed.set_values(str(failed))
         self.tile_susp.set_values(str(susp))
@@ -945,7 +1020,13 @@ class DashboardView(QWidget):
         self._rebuild_summary()
 
     def _rebuild_summary(self) -> None:
-        """摘要卡片：异常 / 未完成 / 存疑的游戏，彩色徽章小卡两列网格。"""
+        """摘要卡片：异常 / 未完成 / 存疑的游戏，彩色徽章小卡两列网格。
+
+        格子、名称、徽章一律给唯一 objectName。以前它们全叫 #scoped，
+        格子上的半透明背景会顺着样式表级联到子控件，游戏名后面出现深浅不一的
+        色块（不同游戏文字长度不同，看起来就是「背景不统一」）。现在改成
+        不透明实色 + 唯一选择器，每一行底色完全一致。
+        """
         while self.summary_lay.count():
             item = self.summary_lay.takeAt(0)
             w = item.widget()
@@ -955,12 +1036,15 @@ class DashboardView(QWidget):
         attn = [i for i in self._items
                 if not i.excluded and (i.has_error
                                        or (i.scanned and i.daily == "failed")
-                                       or i.suspicious)]
-        attn = core.sort_items(attn, "failed_first")   # 未完成优先，带异常最前
+                                       or self._suspect_of(i))]
+        # 默认：异常 → 未完成 → 已修复（倒数第二）→ 存疑（最后）；可切换其它方式
+        attn = core.sort_summary_items(attn, self._cfg, self._summary_sort)
         p = THEME.p
         self.summary_lay.setColumnStretch(0, 1)        # 两列等宽，左右对齐
         self.summary_lay.setColumnStretch(1, 1)
-        self.summary_title.setText(f"关注列表 · {len(attn)}" if attn else "关注列表")
+        n_fixed = sum(1 for i in attn if core.is_fixed(self._cfg, i))
+        title = f"关注列表 · {len(attn)}" if attn else "关注列表"
+        self.summary_title.setText(title + (f"（已修复 {n_fixed}）" if n_fixed else ""))
         if not attn:
             txt = "暂无需要关注的游戏" if any(i.scanned for i in self._items) \
                 else "还没有检查结果，点「开始检查」跑一轮"
@@ -969,8 +1053,16 @@ class DashboardView(QWidget):
             self._summary_tail(1)
             return
 
-        def _badge(text: str, color: str) -> QLabel:
+        # 统一的不透明底色：由卡片表面色与文字色按固定比例混合，所有行一模一样
+        base, fg = p.surface(), QColor(p.text)
+        mix = QColor(round(base.red() * 0.95 + fg.red() * 0.05),
+                     round(base.green() * 0.95 + fg.green() * 0.05),
+                     round(base.blue() * 0.95 + fg.blue() * 0.05))
+        cell_bg, cell_border = mix.name(), rgba(p.text, 0.07)
+
+        def _badge(text: str, color: str, tag: str) -> QLabel:
             b = QLabel(text)
+            b.setObjectName(tag)
             f = QFont("Microsoft YaHei UI")
             f.setPixelSize(10)
             f.setWeight(QFont.DemiBold)
@@ -982,28 +1074,57 @@ class DashboardView(QWidget):
 
         for idx, it in enumerate(attn[:40]):
             cell = QFrame()
+            cell.setObjectName(f"summaryCell_{idx}")
+            cell.setAttribute(Qt.WA_StyledBackground, True)
             cell.setFixedHeight(34)                 # 固定行高，两列才对得齐
             cell.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             scoped(cell,
-                   f"background: {rgba(p.text, 0.05)}; border: none;"
+                   f"background: {cell_bg}; border: 1px solid {cell_border};"
                    f"border-radius: 10px;")
             h = QHBoxLayout(cell)
-            h.setContentsMargins(10, 5, 8, 5)
+            h.setContentsMargins(10, 4, 6, 4)
             h.setSpacing(5)
             name = _label(it.name, 12, "text", bold=True)
+            name.setObjectName(f"summaryName_{idx}")
+            tint(name, p.text)
             name.setToolTip(it.name)
             h.addWidget(name)
             h.addStretch(1)
+            fixed = core.is_fixed(self._cfg, it)
+            seq = 0
+
+            def add_badge(text: str, color: str, tip: str = "") -> None:
+                nonlocal seq
+                b = _badge(text, color, f"summaryBadge_{idx}_{seq}")
+                seq += 1
+                if tip:
+                    b.setToolTip(tip)
+                h.addWidget(b)
+
             if it.has_error:
                 flag = "、".join(sorted(it.error_flags)) or "异常"
                 short = flag if len(flag) <= 14 else flag[:13] + "…"
-                b = _badge(short, p.danger)
-                b.setToolTip(flag)
-                h.addWidget(b)
+                add_badge(short, p.danger, flag)
             if it.scanned and it.daily == "failed":
-                h.addWidget(_badge("未完成", p.warning))
-            if it.suspicious:
-                h.addWidget(_badge("存疑", p.accent))
+                add_badge("未完成", p.warning)
+            if self._suspect_of(it):
+                add_badge("存疑", p.accent)
+            if fixed:
+                add_badge("已修复", p.success)
+
+            btn = QPushButton("×" if fixed else "✓")
+            btn.setObjectName("ghost")
+            btn.setFixedSize(24, 22)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip("取消「已修复」标记" if fixed else "标记为已修复")
+            btn.setAccessibleName(btn.toolTip() or "")
+            bf = QFont("Microsoft YaHei UI")
+            bf.setPixelSize(12)
+            btn.setFont(bf)
+            # 带选择器的内联样式：只压掉主题里的大 padding，避免小按钮里的字被裁
+            btn.setStyleSheet("QPushButton#ghost{padding:0px;min-height:0px;}")
+            btn.clicked.connect(lambda _=False, n=it.name: self.fixed_requested.emit(n))
+            h.addWidget(btn)
             self.summary_lay.addWidget(cell, idx // 2, idx % 2)
         rows = (min(len(attn), 40) + 1) // 2
         if len(attn) > 40:
@@ -1022,6 +1143,7 @@ class DashboardView(QWidget):
         tint(self.subtitle, THEME.p.text_muted)
         tint(self.scan_hint, THEME.p.text_muted)
         tint(self.summary_title, THEME.p.text)
+        self.summary_sort.refresh_theme()
         self._rebuild_summary()
         for t in (self.tile_error, self.tile_failed, self.tile_susp, self.tile_time):
             t.refresh()
@@ -1196,6 +1318,9 @@ class RuleDialog(ThemedDialog):
         self.ft_box = self._field("文件名", self.ft_edit)
         self.ext_edit = _edit("留空 = 沿用每个游戏自己的扩展名", r.get("ext", ""))
         self._field("扩展名", self.ext_edit)
+        self.folders_edit = _edit("留空 = 跟随全局；只填根目录文件夹名，逗号分隔",
+                                  r.get("folders", ""))
+        self._field("日志目录", self.folders_edit)
         self.note_edit = _edit("备注（可空）：这条规则从哪来、要注意什么", r.get("note", ""))
         self._field("备注", self.note_edit)
 
@@ -1204,7 +1329,7 @@ class RuleDialog(ThemedDialog):
         self.warn = _label("", 10, "danger", wrap=True)
         self.body.addWidget(self.warn)
 
-        for e in (self.kw_edit, self.ft_edit, self.ext_edit):
+        for e in (self.kw_edit, self.ft_edit, self.ext_edit, self.folders_edit):
             e.textChanged.connect(self._sync)
         self._sync()
         self.add_footer(ok_text="保存规则")
@@ -1231,6 +1356,7 @@ class RuleDialog(ThemedDialog):
                 "keyword": self.kw_edit.text().strip(),
                 "file_target": self.ft_edit.text().strip(),
                 "ext": self.ext_edit.text().strip(),
+                "folders": self.folders_edit.text().strip(),
                 "note": self.note_edit.text().strip()}
 
     def _sync(self, *_):
@@ -2098,12 +2224,26 @@ class SettingsPage(QWidget):
             "无错天数状态与 DailyCheck.txt 报告存放处；默认与原脚本共用，天数连续",
             self.cache_edit)
 
+        self.streak_toggle = ToggleSwitch(core.streak_check_enabled(self.cfg))
+        self.streak_toggle.toggled.connect(self._save_check)
+        self._row(lay, "check", "启用无错天数",
+                  "关闭后不再累加 / 清零连续无错天数，通知里也不再列出天数；"
+                  "状态文件保留，重新开启可接着算",
+                  self.streak_toggle)
+
         self.err_toggle = ToggleSwitch(core.error_check_enabled(self.cfg))
         self.err_toggle.toggled.connect(self._save_check)
         self._row(lay, "check", "检测 on_error / screencap 文件夹",
                   "开启后扫描 My-maawork 目录树，发现异常文件夹即标记对应游戏并清零无错天数；"
                   "关闭后跳过文件夹异常检测（日常失败仍会清零）",
                   self.err_toggle)
+
+        self.log_thr_toggle = ToggleSwitch(core.log_threshold_check_enabled(self.cfg))
+        self.log_thr_toggle.toggled.connect(self._save_check)
+        self._row(lay, "save", "启用日志阈值检查",
+                  "关闭后不再按日志体积判定「存疑」，已有阈值设置保留；"
+                  "开启时超过阈值的 My-maawork 程序会列入关注列表",
+                  self.log_thr_toggle)
 
         scan_btn = self._small_btn("管理…", self.scan_dir_manage_requested.emit)
         self.scan_row = self._row(lay, "folder", "扫描目录",
@@ -2124,6 +2264,7 @@ class SettingsPage(QWidget):
             lay, "delete", "排除的游戏",
             "、".join(excluded) if excluded else "暂无排除，全部游戏都参与检查",
             excl_btn)
+        self._sync_log_thr()
 
     def _scan_desc(self) -> str:
         dirs = core.get_scan_dirs(self.cfg)
@@ -2141,6 +2282,12 @@ class SettingsPage(QWidget):
         self.err_toggle.blockSignals(True)
         self.err_toggle.setChecked(core.error_check_enabled(self.cfg))
         self.err_toggle.blockSignals(False)
+        for tgl, val in ((self.streak_toggle, core.streak_check_enabled(self.cfg)),
+                         (self.log_thr_toggle, core.log_threshold_check_enabled(self.cfg))):
+            tgl.blockSignals(True)
+            tgl.setChecked(val)
+            tgl.blockSignals(False)
+        self._sync_log_thr()
         excluded = core.get_excluded(self.cfg)
         self.excl_row.set_desc("、".join(excluded) if excluded
                                else "暂无排除，全部游戏都参与检查")
@@ -2148,10 +2295,16 @@ class SettingsPage(QWidget):
             self.scan_row.set_desc(self._scan_desc())
         self.cache_edit.setText(ck.get("cache_dir") or r"D:\Automate\Cache")
 
+    def _sync_log_thr(self) -> None:
+        self.thr_spin.setEnabled(self.log_thr_toggle.isChecked())
+
     def _save_check(self, *_):
         ck = self.cfg.setdefault("check", {})
         ck["threshold_mb"] = int(self.thr_spin.value())
         ck["error_check"] = self.err_toggle.isChecked()
+        ck["streak_check"] = self.streak_toggle.isChecked()
+        ck["log_threshold_check"] = self.log_thr_toggle.isChecked()
+        self._sync_log_thr()
         self.config_changed.emit()
 
     def _save_cache(self, *_):

@@ -447,10 +447,13 @@ class MainWindow(QWidget):
 
         # 页面
         self.page_home = DashboardView()
+        self.page_home.set_config(self.cfg)
         self.page_home.check_requested.connect(self.start_check)
         self.page_home.cancel_requested.connect(self.cancel_tasks)
         self.page_home.notify_requested.connect(self.send_notify)
         self.page_home.goto_games.connect(lambda: self._on_nav("games"))
+        self.page_home.fixed_requested.connect(self.toggle_fixed)
+        self.page_home.summary_sort_changed.connect(self.set_summary_sort)
 
         self.page_games = GamesPage()
         self.page_games.row_open.connect(self.open_game_folder)
@@ -473,6 +476,7 @@ class MainWindow(QWidget):
         mp.games.game_remove_requested.connect(self.remove_game)
         mp.games.game_threshold_changed.connect(self.set_game_threshold)
         mp.folder.folder_map_manage_requested.connect(self.manage_folder_map)
+        mp.folder.log_folders_changed.connect(self.on_log_folders_changed)
 
         self.page_settings = SettingsPage(self.cfg)
         self._wire_settings(self.page_settings)
@@ -876,7 +880,7 @@ class MainWindow(QWidget):
         self.last_result = result
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         self.page_games.refresh_order()      # 结果都回来了，按当前排序方式落定
-        self.page_home.last_check_time = time.strftime("%H:%M")
+        self.page_home.last_check_time = time.strftime("%H:%M:%S")
         self.page_home.refresh_stats()
         n_att = self._attention_count()
         if self.tray is not None:
@@ -1056,12 +1060,13 @@ class MainWindow(QWidget):
         self._save_cfg()
         if it is not None:
             it.threshold_mb = mb
-            it.suspicious = bool(it.is_maawork and it.log_size > mb * 1024 * 1024
+            on = core.log_threshold_check_enabled(self.cfg)
+            it.suspicious = bool(on and it.is_maawork and it.log_size > mb * 1024 * 1024
                                  and it.daily != "failed" and not it.has_error
                                  and not it.excluded)
             if self.last_result:
                 susp = {k: v for k, v in self.last_result["suspicious"].items()
-                        if k != name}
+                        if k != name} if on else {}
                 if it.suspicious:
                     susp[name] = it.log_size
                 self.last_result["suspicious"] = susp
@@ -1176,7 +1181,9 @@ class MainWindow(QWidget):
         it.extension = core.rule_ext(r, g)
         it.rule = core.describe_rule(it.target, it.folder, it.extension,
                                      r.get("methods") or [core.DEFAULT_METHOD],
-                                     r.get("file_target", ""))
+                                     r.get("file_target", ""), True,
+                                     core.get_log_folders(self.cfg, r)
+                                     if core.log_folder_check_enabled(self.cfg) else None)
 
     def _after_rule_change(self, rescan: bool = False) -> None:
         """规则库变动后刷新页面；rescan=True 时把引用它的游戏全部重扫。"""
@@ -1332,6 +1339,52 @@ class MainWindow(QWidget):
             grow.set_item(it)
             self.page_games.list.schedule_reorder()
 
+    # ---------- 关注列表：已修复标记 / 排序 / 检查开关 ----------
+    def toggle_fixed(self, name: str) -> None:
+        """只是加/去掉一个标记，游戏仍留在关注列表里，由排序决定位置。"""
+        on = not core.is_fixed(self.cfg, name)
+        core.set_fixed(self.cfg, name, on)
+        self._save_cfg()
+        self.page_home.refresh_stats()
+        self.toast.show_text(f"「{name}」已标记为已修复" if on
+                             else f"「{name}」已取消已修复标记")
+
+    def set_summary_sort(self, mode: str) -> None:
+        self.cfg.setdefault("check", {})["summary_sort"] = mode
+        self._save_cfg()
+        self.page_home.set_summary_sort(mode)
+
+    def on_log_folders_changed(self) -> None:
+        self._save_cfg()
+        self._after_rule_change(rescan=False)
+        self.toast.show_text("日志文件夹判定已保存，下次「开始检查」按新目录判定")
+
+    def _sync_check_options(self) -> None:
+        """检查参数开关变了：立刻按新开关重算存疑 / 天数，不用等下一轮扫描。"""
+        if not hasattr(self, "page_games"):
+            return
+        opts = (core.log_threshold_check_enabled(self.cfg),
+                core.streak_check_enabled(self.cfg),
+                core.log_folder_check_enabled(self.cfg),
+                tuple(core.get_log_folders(self.cfg)))
+        if opts == getattr(self, "_last_check_opts", None):
+            return
+        self._last_check_opts = opts
+        on = core.log_threshold_check_enabled(self.cfg)
+        games = getattr(self, "games", None) or []
+        for it in games:
+            it.suspicious = bool(
+                on and it.is_maawork and it.log_size > it.threshold_mb * 1024 * 1024
+                and it.daily != "failed" and not it.has_error and not it.excluded)
+            if not core.streak_check_enabled(self.cfg):
+                it.streak = 0
+            self._refresh_game_row(it)
+        lr = getattr(self, "last_result", None)
+        if lr:
+            lr["suspicious"] = ({i.name: i.log_size for i in games if i.suspicious}
+                                if on else {})
+        self.page_home.refresh_stats()
+
     def _save_cfg(self) -> None:
         self.cfg.setdefault("ui", {})["preset"] = THEME.preset
         g = self.normalGeometry()
@@ -1341,6 +1394,7 @@ class MainWindow(QWidget):
         core.save_config(self.cfg)
         self._apply_schedule()
         self._sync_default_threshold()
+        self._sync_check_options()
 
     def _sync_default_threshold(self) -> None:
         """默认阈值改过之后，判定规则页里跟随默认的那些步进器要跟着变。"""

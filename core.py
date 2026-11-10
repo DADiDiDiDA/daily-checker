@@ -24,7 +24,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -100,6 +100,19 @@ DEFAULT_LOG_THRESHOLD_MB = 10
 # 早期版本给 FGO / 潮汐守望者 / 钢岚 单独调过阈值（21 / 16 / 12）。现在统一成 10：
 # 新设备上所有游戏都是 10；老配置里已经存下的单游戏阈值视为用户手动设置，原样保留。
 DEFAULT_GAME_THRESHOLDS: Dict[str, int] = {}
+
+# 「日志文件夹判定」：只在游戏程序根目录下的这几个文件夹里找关键字 / 检查目标文件，
+# 每个文件夹只读顶层文件，不递归子目录，也不扫描程序里的其它文件夹。
+DEFAULT_LOG_FOLDERS = ["logs", "log", "debug", ".log"]
+
+# 首页关注列表的排序方式（默认：已修复倒数第二、存疑最后）
+SUMMARY_SORTS = [
+    ("state", "状态优先"),
+    ("name", "按名称"),
+    ("fixed_last", "已修复置底"),
+    ("default", "默认顺序"),
+]
+DEFAULT_SUMMARY_SORT = "state"
 
 # 日常完成判断方式（第 1 种与原脚本一致）
 # 说明文字要写清「看哪些文件 / 比什么 / 以什么为准」，别只写「关键词匹配」
@@ -236,6 +249,8 @@ def _norm_rule(raw: dict) -> dict:
         "keyword": str(raw.get("keyword") or "").strip(),
         "file_target": str(raw.get("file_target") or "").strip(),
         "ext": str(raw.get("ext") or "").strip(),
+        # 只扫这些「程序根目录下的日志文件夹」；留空 = 跟随全局设置
+        "folders": str(raw.get("folders") or "").strip(),
         "note": str(raw.get("note") or "").strip(),
     }
 
@@ -355,6 +370,7 @@ def rule_of(cfg: dict, game_name: str) -> dict:
     return {"id": "", "name": "旧版自定义（未绑定规则）",
             "methods": [m for m in methods if m in METHOD_KEYS] or [DEFAULT_METHOD],
             "keyword": g.target if g else "", "file_target": ft, "ext": "",
+            "folders": "",
             "note": "旧配置里的单游戏判断方式；在界面里绑一条规则即可统一管理"}
 
 
@@ -371,7 +387,7 @@ def rule_keyword(rule: dict, game: Optional[GameConfig] = None) -> str:
 
 def describe_rule(keyword: str, folder: str, ext: Optional[str],
                   methods: List[str], file_target: str = "",
-                  with_folder: bool = True) -> str:
+                  with_folder: bool = True, folders: Optional[List[str]] = None) -> str:
     """把判断方式翻译成一句可核对的具体规则：看哪些文件、比什么、以什么为准。
 
     with_folder=False 时用「日志目录」代替完整路径（界面里一行放得下）。"""
@@ -393,7 +409,10 @@ def describe_rule(keyword: str, folder: str, ext: Optional[str],
             out.append(f"{where}存在「{file_target or '未设置文件名'}」就算完成（不看日期）")
         elif m == "file_today":
             out.append(f"{where}「{file_target or '未设置文件名'}」存在且今天修改过才算完成")
-    return "；或 ".join(out)
+    text = "；或 ".join(out)
+    if folders:
+        text += f"；只查程序根目录下的 {'、'.join(folders)}，不递归子目录"
+    return text
 
 
 def rule_text(cfg: dict, game: GameConfig, rule: Optional[dict] = None,
@@ -402,7 +421,8 @@ def rule_text(cfg: dict, game: GameConfig, rule: Optional[dict] = None,
     r = rule or rule_of(cfg, game.name)
     return describe_rule(rule_keyword(r, game), game.folder, rule_ext(r, game),
                          r.get("methods") or [DEFAULT_METHOD],
-                         r.get("file_target", ""), with_folder)
+                         r.get("file_target", ""), with_folder,
+                         get_log_folders(cfg, r) if log_folder_check_enabled(cfg) else None)
 
 
 def rule_name_of(cfg: dict, game_name: str) -> str:
@@ -543,6 +563,12 @@ def load_config() -> dict:
                   "custom_games": [],
                   "default_method": DEFAULT_METHOD,
                   "error_check": True,
+                  "log_threshold_check": True,   # 是否启用日志体积阈值（存疑）检查
+                  "streak_check": True,          # 是否统计 / 展示无错天数
+                  "log_folder_check": True,      # 是否启用根目录日志文件夹判定
+                  "log_folders": list(DEFAULT_LOG_FOLDERS),
+                  "fixed_marks": {},             # 关注列表里手动标记「已修复」的游戏
+                  "summary_sort": DEFAULT_SUMMARY_SORT,
                   "folder_map": {},
                   "file_targets": {},
                   "sort_mode": DEFAULT_SORT,
@@ -588,7 +614,8 @@ def rule_text_bare(rule: dict) -> str:
     """规则库列表里的一句话说明（不涉及具体游戏的目录）。"""
     return describe_rule(rule.get("keyword", ""), "", rule.get("ext") or None,
                          rule.get("methods") or [DEFAULT_METHOD],
-                         rule.get("file_target", ""), with_folder=False)
+                         rule.get("file_target", ""), with_folder=False,
+                         folders=parse_folder_names(rule.get("folders")) or None)
 
 
 def set_game_rule(cfg: dict, game_name: str, rule_id: str) -> None:
@@ -874,6 +901,112 @@ def error_check_enabled(cfg: dict) -> bool:
     return bool((cfg.get("check") or {}).get("error_check", True))
 
 
+def log_threshold_check_enabled(cfg: dict) -> bool:
+    """是否启用日志体积阈值检查（关掉后不再产生「存疑」）。"""
+    return bool((cfg.get("check") or {}).get("log_threshold_check", True))
+
+
+def streak_check_enabled(cfg: dict) -> bool:
+    """是否统计 / 展示无错天数（关掉后不清零、不累加、不写通知里的天数段）。"""
+    return bool((cfg.get("check") or {}).get("streak_check", True))
+
+
+def log_folder_check_enabled(cfg: dict) -> bool:
+    return bool((cfg.get("check") or {}).get("log_folder_check", True))
+
+
+def parse_folder_names(raw) -> List[str]:
+    """清洗「日志文件夹名」输入：只留单层文件夹名，挡掉路径与 . / ..。"""
+    if isinstance(raw, (list, tuple)):
+        parts = [str(x) for x in raw]
+    else:
+        s = str(raw or "").replace("，", ",").replace("、", ",").replace(";", ",")
+        parts = s.split(",")
+    out: List[str] = []
+    for x in parts:
+        name = str(x).strip().strip("/\\")
+        if not name or name in (".", "..") or os.sep in name or "/" in name or "\\" in name:
+            continue
+        if name.lower() not in {y.lower() for y in out}:
+            out.append(name)
+    return out
+
+
+def get_log_folders(cfg: dict, rule: Optional[dict] = None) -> List[str]:
+    """生效的日志文件夹名列表：规则自己填的优先，否则用全局设置。"""
+    own = parse_folder_names((rule or {}).get("folders"))
+    if own:
+        return own
+    raw = (cfg.get("check") or {}).get("log_folders")
+    if raw is None:
+        return list(DEFAULT_LOG_FOLDERS)
+    return parse_folder_names(raw)
+
+
+def set_log_folders(cfg: dict, folders) -> List[str]:
+    """写入全局日志文件夹列表；等于默认值时删掉配置，保持文件干净。"""
+    clean = parse_folder_names(folders)
+    ck = cfg.setdefault("check", {})
+    if clean == DEFAULT_LOG_FOLDERS:
+        ck.pop("log_folders", None)
+    else:
+        ck["log_folders"] = clean
+    return clean
+
+
+# ---------- 关注列表：手动标记「已修复」+ 排序 ----------
+
+def get_fixed_marks(cfg: dict) -> Dict[str, str]:
+    raw = (cfg.get("check") or {}).get("fixed_marks") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if str(k).strip()}
+
+
+def is_fixed(cfg: dict, game) -> bool:
+    name = game if isinstance(game, str) else game.name
+    return name in get_fixed_marks(cfg)
+
+
+def set_fixed(cfg: dict, name: str, on: bool) -> bool:
+    """标记只是加个状态，不把游戏移出关注列表；再点一次即可取消。"""
+    ck = cfg.setdefault("check", {})
+    marks = get_fixed_marks(cfg)
+    if on:
+        marks[name] = time.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        marks.pop(name, None)
+    ck["fixed_marks"] = marks
+    return bool(on)
+
+
+def get_summary_sort(cfg: dict) -> str:
+    mode = str((cfg.get("check") or {}).get("summary_sort") or DEFAULT_SUMMARY_SORT)
+    return mode if mode in dict(SUMMARY_SORTS) else DEFAULT_SUMMARY_SORT
+
+
+def sort_summary_items(items: list, cfg: dict, mode: str = "") -> list:
+    """关注列表排序。默认「状态优先」：异常 → 未完成 → 已修复 → 存疑（最后）。"""
+    mode = mode or get_summary_sort(cfg)
+    if mode == "default":
+        return sort_items(items, "failed_first")
+    if mode == "name":
+        return sorted(items, key=lambda i: i.name)
+
+    def tier(i) -> int:
+        if is_fixed(cfg, i):
+            return 9 if mode == "fixed_last" else 8
+        if i.has_error:
+            return 0
+        if i.scanned and i.daily == "failed" and not i.excluded:
+            return 1
+        if i.suspicious:
+            return 3 if mode == "fixed_last" else 9
+        return 2
+
+    return sorted(items, key=lambda i: (tier(i), i.name))
+
+
 def get_excluded(cfg: dict) -> List[str]:
     raw = (cfg.get("check") or {}).get("excluded") or []
     return [str(x) for x in raw]
@@ -1016,14 +1149,17 @@ class Engine:
                 success_message=g.success_message,
                 program_dir=program_dir,
                 is_maawork=any(pd == b or pd.startswith(b + os.sep) for b in scan_roots),
-                streak=int(streaks.get(g.name, 0) or 0),
+                streak=int(streaks.get(g.name, 0) or 0)
+                if streak_check_enabled(self.cfg) else 0,
             )
             it.excluded = g.name in excluded
             if it.excluded:
                 it.detail = "已排除，不参与检查"
             it.rule = describe_rule(it.target, it.folder, it.extension,
                                     rule.get("methods") or [DEFAULT_METHOD],
-                                    rule.get("file_target", ""))
+                                    rule.get("file_target", ""), True,
+                                    get_log_folders(self.cfg, rule)
+                                    if log_folder_check_enabled(self.cfg) else None)
             games.append(it)
         return games
 
@@ -1122,23 +1258,51 @@ class Engine:
             return True, 1, ""
         return cls._search_in_files(folder, keyword, ext, method)
 
+    def _candidate_folders(self, it: Game, rule: dict) -> List[str]:
+        """日志文件夹判定：游戏自带日志目录 + 程序根目录下指定的几个日志文件夹。
+
+        只列这些目录的顶层文件，不递归子目录，也不会去翻程序里的其它文件夹。
+        关闭开关时退回旧行为（只查游戏自带的那一个目录）。
+        """
+        folders = [it.folder]
+        if not log_folder_check_enabled(self.cfg):
+            return folders
+        seen = {os.path.normcase(os.path.normpath(it.folder))}
+        for name in get_log_folders(self.cfg, rule):
+            p = name if os.path.isabs(name) else os.path.join(it.program_dir, name)
+            p = os.path.normpath(p)
+            key = os.path.normcase(p)
+            if key not in seen:
+                seen.add(key)
+                folders.append(p)
+        return folders
+
     def scan_item(self, it: Game) -> None:
-        """检查单个游戏：逐个尝试判断方式，任一满足即算完成。"""
+        """检查单个游戏：逐个尝试判断方式 × 允许的日志文件夹，任一满足即算完成。"""
         it.state = "running"
-        methods = get_methods(self.cfg, it.name)
-        file_target = get_file_target(self.cfg, it.name)
-        it.rule = describe_rule(it.target, it.folder, it.extension, methods, file_target)
+        rule = rule_of(self.cfg, it.name)
+        methods = rule.get("methods") or [DEFAULT_METHOD]
+        file_target = str(rule.get("file_target") or "").strip()
+        folders = self._candidate_folders(it, rule)
+        folder_names = (get_log_folders(self.cfg, rule)
+                        if log_folder_check_enabled(self.cfg) else None)
+        it.rule = describe_rule(it.target, it.folder, it.extension, methods,
+                                file_target, True, folder_names)
         done = False
         scanned = 0
         errs: List[str] = []
         for m in methods:
-            ok, n, err = self._match_method(it.folder, it.extension, m,
-                                            it.target, file_target)
-            scanned += n
-            if err:
-                errs.append(err)
-            if ok:
-                done = True
+            for idx, folder in enumerate(folders):
+                ok, n, err = self._match_method(folder, it.extension, m,
+                                                it.target, file_target)
+                scanned += n
+                # 附加文件夹不存在是常态，只报主日志目录的错误，别刷一屏
+                if err and idx == 0:
+                    errs.append(err)
+                if ok:
+                    done = True
+                    break
+            if done:
                 break
         it.files_scanned = scanned
         it.daily = "done" if done else "failed"
@@ -1148,7 +1312,7 @@ class Engine:
             it.detail = it.success_message
         else:
             it.detail = describe_failure(it.target, it.extension, methods, file_target,
-                                         scanned, os.path.isdir(it.folder))
+                                         scanned, any(os.path.isdir(f) for f in folders))
         it.log_size = self._log_folder_size(it.debug_dir) if it.is_maawork else 0
         it.threshold_mb = get_threshold_mb(self.cfg, it.name)
         it.scanned = True
@@ -1211,6 +1375,8 @@ class Engine:
 
     def update_streaks(self, all_games: List[str], error_games: Set[str],
                        daily_failed: Set[str]) -> None:
+        if not streak_check_enabled(self.cfg):
+            return                     # 关掉后既不清零也不累加，状态文件原样保留
         today = time.strftime("%Y-%m-%d")
         games_state: Dict[str, int] = self.state.setdefault("games", {})
         last_dates: Dict[str, str] = self.state.setdefault("game_last_dates", {})
@@ -1251,8 +1417,9 @@ class Engine:
             if on_progress:
                 on_progress(i + 1, total, it.name)
             (success if it.daily == "done" else failed).append(it.name)
-            # 存疑初筛：仅 My-maawork 下的程序参与，按各自阈值
-            if it.is_maawork and it.log_size > it.threshold_mb * 1024 * 1024:
+            # 存疑初筛：仅 My-maawork 下的程序参与，按各自阈值；关掉开关后完全不判
+            if (log_threshold_check_enabled(self.cfg) and it.is_maawork
+                    and it.log_size > it.threshold_mb * 1024 * 1024):
                 suspicious[it.name] = it.log_size
 
         if self.cancel.is_set():
@@ -1338,7 +1505,7 @@ class Engine:
         else:
             lines.append("✅ 未发现异常")
         normal = [g for g in all_games if g not in error_games]
-        if normal:
+        if normal and streak_check_enabled(self.cfg):
             lines += ["", "无错天数："]
             for game in self.sort_by_order(normal):
                 lines.append(f"  {game}：{games_state.get(game, 0)}")
