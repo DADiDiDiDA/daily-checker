@@ -454,6 +454,7 @@ class MainWindow(QWidget):
         self.page_home.goto_games.connect(lambda: self._on_nav("games"))
         self.page_home.fixed_requested.connect(self.toggle_fixed)
         self.page_home.summary_sort_changed.connect(self.set_summary_sort)
+        self.page_home.state_requested.connect(self.set_manual_state)
 
         self.page_games = GamesPage()
         self.page_games.row_open.connect(self.open_game_folder)
@@ -674,7 +675,7 @@ class MainWindow(QWidget):
     # ---------- 导航 ----------
     SUB_KEYS = ("fm", "rules", "game_rules")
     TITLES = {"home": "总览", "games": "游戏列表", "fm": "判定规则 · 文件夹关键词映射",
-              "rules": "判定规则 · 规则库", "game_rules": "判定规则 · 游戏 → 规则",
+              "rules": "判定规则 · 规则库", "game_rules": "判定规则 · 程序检查规则",
               "settings": "设置"}
     PAGE_INDEX = {"home": 0, "games": 1, "fm": 2, "rules": 3,
                   "game_rules": 4, "settings": 5}
@@ -1391,6 +1392,17 @@ class MainWindow(QWidget):
         self.cfg.setdefault("check", {})["summary_sort"] = mode
         self._save_cfg()
         self.page_home.set_summary_sort(mode)
+
+    def set_manual_state(self, name: str, state: str) -> None:
+        """总览右键手动设置状态：done / failed / 空=清除（恢复跟随检查结果）。"""
+        core.set_manual_state(self.cfg, name, state or None)
+        self._save_cfg()
+        self.page_home.refresh_stats()
+        msg = {"done": f"「{name}」已设为已完成（下轮检查开始时自动恢复）",
+               "failed": f"「{name}」已设为未完成（下轮检查开始时自动恢复）"}.get(state)
+        if msg is None:
+            msg = f"「{name}」已清除手动状态，恢复跟随检查结果"
+        self.toast.show_text(msg)
 
     def on_log_folders_changed(self) -> None:
         self._save_cfg()

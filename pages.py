@@ -9,7 +9,7 @@ from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame,
                                QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+                               QLabel, QLineEdit, QMenu, QPlainTextEdit, QPushButton,
                                QScrollArea, QSizePolicy, QSpacerItem, QStackedWidget,
                                QVBoxLayout, QWidget)
 
@@ -634,7 +634,7 @@ class RulesView(QWidget):
 
 
 class GameRulesView(QWidget):
-    """判定规则 · 游戏 → 规则（独立子页）。"""
+    """判定规则 · 程序检查规则（独立子页）。"""
 
     add_game_requested = Signal()
     game_rule_changed = Signal(str, str)
@@ -654,9 +654,10 @@ class GameRulesView(QWidget):
         outer.addWidget(scroll)
 
         card = Card(padding=16)
+        card.lay.setContentsMargins(16, 4, 16, 16)   # 黑字标题上移（同规则库页）
         head = QHBoxLayout()
         head.setSpacing(8)
-        self.title = _label("游戏 → 规则", 15, "text", bold=True)
+        self.title = _label("程序检查规则", 15, "text", bold=True)
         head.addWidget(self.title)
         self.count = _label("", 11, "text_muted")
         head.addWidget(self.count)
@@ -768,7 +769,7 @@ class FolderMapView(QWidget):
         btn.setObjectName("ghost")
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFixedHeight(30)
-        btn.setToolTip("编辑 / 删除任意一条映射（含内置 13 条），也能一键恢复内置")
+        btn.setToolTip("编辑 / 删除任意一条映射（含内置 20 条），也能一键恢复内置")
         btn.clicked.connect(self.folder_map_manage_requested.emit)
         self.row = SettingRow("folder", "文件夹部分映射", "", btn)
         body.addWidget(self.row)
@@ -892,6 +893,7 @@ class DashboardView(QWidget):
     notify_requested = Signal()
     goto_games = Signal()
     fixed_requested = Signal(str)          # 切换某个游戏的「已修复」标记
+    state_requested = Signal(str, str)     # 右键手动设置状态：名称 + done/failed/空=清除
     summary_sort_changed = Signal(str)     # 关注列表排序方式
 
     def __init__(self, parent=None):
@@ -1049,7 +1051,7 @@ class DashboardView(QWidget):
         items = self._items
         err = sum(1 for i in items if i.has_error)
         failed = sum(1 for i in items
-                     if i.scanned and i.daily == "failed" and not i.excluded)
+                     if core.effective_failed(self._cfg, i))
         susp = sum(1 for i in items if self._suspect_of(i) and not i.excluded)
         self.tile_error.set_values(str(err))
         self.tile_failed.set_values(str(failed))
@@ -1083,9 +1085,9 @@ class DashboardView(QWidget):
                 w.deleteLater()
         attn = [i for i in self._items
                 if not i.excluded and (i.has_error
-                                       or (i.scanned and i.daily == "failed")
+                                       or core.effective_failed(self._cfg, i)
                                        or self._suspect_of(i))]
-        # 默认：异常 → 未完成 → 已修复（倒数第二）→ 存疑（最后）；可切换其它方式
+        # 默认：未完成 → 异常 → 其它 → 已修复（倒数第二）→ 存疑（最后）；可切换其它方式
         attn = core.sort_summary_items(attn, self._cfg, self._summary_sort)
         p = THEME.p
         self.summary_lay.setColumnStretch(0, 1)        # 两列等宽，左右对齐
@@ -1139,6 +1141,7 @@ class DashboardView(QWidget):
             h.addWidget(name)
             h.addStretch(1)
             fixed = core.is_fixed(self._cfg, it)
+            manual = core.manual_state_of(self._cfg, it)
             seq = 0
 
             def add_badge(text: str, color: str, tip: str = "") -> None:
@@ -1153,10 +1156,14 @@ class DashboardView(QWidget):
                 flag = "、".join(sorted(it.error_flags)) or "异常"
                 short = flag if len(flag) <= 14 else flag[:13] + "…"
                 add_badge(short, p.danger, flag)
-            if it.scanned and it.daily == "failed":
-                add_badge("未完成", p.warning)
+            if core.effective_failed(self._cfg, it):
+                add_badge("未完成", p.warning,
+                          "手动设置，下一轮检查自动恢复" if manual == "failed" else "")
             if self._suspect_of(it):
                 add_badge("存疑", p.accent)
+            if manual == "done" and it.has_error:
+                add_badge("手动已完成", p.success,
+                          "右键可清除；下一轮检查自动恢复")
             if fixed:
                 add_badge("已修复", p.success)
 
@@ -1173,6 +1180,11 @@ class DashboardView(QWidget):
             btn.setStyleSheet("QPushButton#ghost{padding:0px;min-height:0px;}")
             btn.clicked.connect(lambda _=False, n=it.name: self.fixed_requested.emit(n))
             h.addWidget(btn)
+            # 右键菜单：设为已完成 / 未完成 / 已修复 / 清除手动状态
+            cell.setContextMenuPolicy(Qt.CustomContextMenu)
+            cell.customContextMenuRequested.connect(
+                lambda pos, w=cell, n=it.name, fx=fixed, mn=manual:
+                    self._cell_menu(w, pos, n, fx, mn))
             self.summary_lay.addWidget(cell, idx // 2, idx % 2)
         rows = (min(len(attn), 40) + 1) // 2
         if len(attn) > 40:
@@ -1180,6 +1192,27 @@ class DashboardView(QWidget):
             self.summary_lay.addWidget(more, rows, 0, 1, 2)
             rows += 1
         self._summary_tail(rows)
+
+    def _cell_menu(self, cell, pos, name: str, fixed: bool, manual: str) -> None:
+        """关注列表格子右键菜单：手动设置完成状态 / 已修复 / 清除覆盖。"""
+        menu = QMenu(cell)
+        a_done = menu.addAction("设为已完成")
+        a_done.setToolTip("下轮检查开始时自动恢复为真实结果")
+        a_failed = menu.addAction("设为未完成")
+        a_clear = menu.addAction("清除手动状态（跟随检查结果）") if manual else None
+        menu.addSeparator()
+        a_fixed = menu.addAction("取消已修复" if fixed else "标记已修复")
+        chosen = menu.exec(cell.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is a_done:
+            self.state_requested.emit(name, "done")
+        elif chosen is a_failed:
+            self.state_requested.emit(name, "failed")
+        elif a_clear is not None and chosen is a_clear:
+            self.state_requested.emit(name, "")
+        elif chosen is a_fixed:
+            self.fixed_requested.emit(name)
 
     def _summary_tail(self, row: int) -> None:
         """末尾垫一个可拉伸空白：多出来的高度落在它身上，卡片里的行不会被拉高。"""
@@ -1596,7 +1629,7 @@ class FolderMapDialog(_GameListDialog):
         super().__init__(parent, "文件夹部分映射", 560)
         self.body.addWidget(_label(
             "程序文件夹名里只要包含左侧关键词就算映射成功（不要求完全相等），"
-            "用于异常监控与无错天数统计。内置 13 条在这里同样可以直接改或删。",
+            "用于异常监控与无错天数统计。内置 20 条在这里同样可以直接改或删。",
             11, "text_muted", wrap=True))
         self.rows_lay = QVBoxLayout()
         self.rows_lay.setContentsMargins(0, 0, 0, 0)
@@ -1625,7 +1658,7 @@ class FolderMapDialog(_GameListDialog):
         add_btn.setFixedHeight(32)
         add_btn.clicked.connect(lambda: self._add_row("", ""))
         tools.addWidget(add_btn)
-        reset_btn = QPushButton("恢复内置 13 条")
+        reset_btn = QPushButton("恢复内置 20 条")
         reset_btn.setObjectName("ghost")
         reset_btn.setCursor(Qt.PointingHandCursor)
         reset_btn.setFixedHeight(32)
@@ -2311,7 +2344,7 @@ class SettingsPage(QWidget):
                   "关闭后跳过文件夹异常检测（日常失败仍会清零）",
                   self.err_toggle)
 
-        # 「启用日志阈值检查」与「默认日志阈值」已搬到「判定规则 · 游戏 → 规则」页，
+        # 「启用日志阈值检查」与「默认日志阈值」已搬到「判定规则 · 程序检查规则」页，
         # 和每行自己的阈值放在一起；设置页不再重复。
         scan_btn = self._small_btn("管理…", self.scan_dir_manage_requested.emit)
         self.scan_row = self._row(lay, "folder", "扫描目录",

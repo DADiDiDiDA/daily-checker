@@ -25,7 +25,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -182,14 +182,10 @@ BUILTIN_RULES: List[Dict] = [
      "methods": ["keyword"], "keyword": "所有任务都已完成",
      "file_target": "", "ext": "",
      "note": "Maa_bbb 收尾日志"},
-    {"id": "r_m9a", "name": "1999 · 任务已全部完成",
+    {"id": "r_maa", "name": "通用 · 任务已全部完成",
      "methods": ["keyword"], "keyword": "任务已全部完成",
      "file_target": "", "ext": "",
-     "note": "M9A 收尾日志；注意没有感叹号"},
-    {"id": "r_maa", "name": "MAA 系 · 任务已全部完成！",
-     "methods": ["keyword"], "keyword": "任务已全部完成！",
-     "file_target": "", "ext": "",
-     "note": "MAA / MFAA 系列脚本通用的完成日志，十几款游戏共用这一条"},
+     "note": "M9A / MAA / MFAA 系列脚本通用的完成日志（有无感叹号都命中），1999 与十几款游戏共用这一条"},
     {"id": "r_endfield", "name": "终末地 · MXU_KILLPROC",
      "methods": ["keyword"], "keyword": "MXU_KILLPROC",
      "file_target": "", "ext": "",
@@ -202,7 +198,7 @@ DEFAULT_RULE_MAP: Dict[str, str] = {
     "星铁": "r_hsr",
     "绝区零": "r_zzz",
     "崩坏三": "r_bbb",
-    "1999": "r_m9a",
+    "1999": "r_maa",
     "明日方舟": "r_maa",
     "终末地": "r_endfield",
     "潮汐守望者": "r_maa",
@@ -269,7 +265,7 @@ def _norm_rule(raw: dict) -> dict:
 
 
 def get_rules(cfg: Optional[dict] = None) -> List[dict]:
-    """规则库：配置里有就用配置的，否则用内置 7 条。"""
+    """规则库：配置里有就用配置的，否则用内置规则（v1.7.2 起 6 条）。"""
     stored = ((cfg or {}).get("check") or {}).get("rules")
     if isinstance(stored, list):
         rules = [_norm_rule(r) for r in stored if isinstance(r, dict)]
@@ -601,6 +597,7 @@ def load_config() -> dict:
                   "log_folder_check": True,      # 是否启用根目录日志文件夹判定
                   "log_folders": list(DEFAULT_LOG_FOLDERS),
                   "fixed_marks": {},             # 关注列表里手动标记「已修复」的游戏
+                  "manual_states": {},           # 总览右键手动设的已完成/未完成，下一轮检查自动清空
                   "summary_sort": DEFAULT_SUMMARY_SORT,
                   "folder_map": {},
                   "folder_map_removed": [],
@@ -629,7 +626,45 @@ def load_config() -> dict:
             shutil.copy2(config_path(), config_path() + ".corrupt")
         except Exception:
             pass
+    _migrate_merge_m9a(cfg)
     return cfg
+
+
+def _migrate_merge_m9a(cfg: dict) -> None:
+    """v1.7.3：r_m9a（1999 · 任务已全部完成）并入 r_maa（通用 · 任务已全部完成）。
+
+    只对已落库的自定义规则生效；用内置规则库的配置自动跟随新内置。
+    r_maa 的关键词去掉感叹号（子串匹配，有无「！」都命中），否则 1999 的日志
+    （没有感叹号）永远匹配不上。"""
+    ck = cfg.get("check")
+    if not isinstance(ck, dict):
+        return
+    rules = ck.get("rules")
+    if isinstance(rules, list):
+        changed = False
+        out = []
+        for r in rules:
+            if not isinstance(r, dict):
+                out.append(r)
+                continue
+            rid = str(r.get("id") or "").strip()
+            if rid == "r_m9a":
+                changed = True
+                continue                      # r_m9a 移除，引用走 rule_map 迁移
+            if rid == "r_maa" and str(r.get("keyword") or "") == "任务已全部完成！":
+                r = dict(r)
+                r["keyword"] = "任务已全部完成"
+                r["name"] = "通用 · 任务已全部完成"
+                r["note"] = "M9A / MAA / MFAA 系列脚本通用的完成日志（有无感叹号都命中）"
+                changed = True
+            out.append(r)
+        if changed:
+            ck["rules"] = out
+    rule_map = ck.get("rule_map")
+    if isinstance(rule_map, dict):
+        for k, v in list(rule_map.items()):
+            if v == "r_m9a":
+                rule_map[k] = "r_maa"
 
 
 def save_config(cfg: dict) -> None:
@@ -1080,6 +1115,52 @@ def set_fixed(cfg: dict, name: str, on: bool) -> bool:
     return bool(on)
 
 
+def get_manual_states(cfg: dict) -> Dict[str, str]:
+    """手动覆盖的完成状态（总览右键设置）：游戏名 → done / failed。"""
+    raw = (cfg.get("check") or {}).get("manual_states") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if v in ("done", "failed")}
+
+
+def manual_state_of(cfg: dict, name) -> str:
+    name = name if isinstance(name, str) else name.name
+    return get_manual_states(cfg).get(name, "")
+
+
+def set_manual_state(cfg: dict, name, state) -> None:
+    """手动把某游戏标成已完成 / 未完成；state 为空则清除，恢复跟随检查结果。
+
+    手动状态只到下一轮检查开始为止（run_check 会清空），已修复标记不受影响。"""
+    name = name if isinstance(name, str) else name.name
+    ck = cfg.setdefault("check", {})
+    ms = get_manual_states(cfg)
+    if state in ("done", "failed"):
+        ms[name] = state
+    else:
+        ms.pop(name, None)
+    if ms:
+        ck["manual_states"] = ms
+    else:
+        ck.pop("manual_states", None)
+
+
+def clear_manual_states(cfg: dict) -> None:
+    """新一轮检查开始时清空手动覆盖，让真实结果接管（已修复标记保留）。"""
+    ck = cfg.setdefault("check", {})
+    ck.pop("manual_states", None)
+
+
+def effective_failed(cfg: dict, i) -> bool:
+    """考虑手动覆盖后的「未完成」判定（排序 / 关注列表 / 统计都用它）。"""
+    ms = manual_state_of(cfg, i)
+    if ms == "failed":
+        return not i.excluded
+    if ms == "done":
+        return False
+    return bool(i.scanned and i.daily == "failed" and not i.excluded)
+
+
 def get_summary_sort(cfg: dict) -> str:
     mode = str((cfg.get("check") or {}).get("summary_sort") or DEFAULT_SUMMARY_SORT)
     return mode if mode in dict(SUMMARY_SORTS) else DEFAULT_SUMMARY_SORT
@@ -1096,8 +1177,8 @@ def sort_summary_items(items: list, cfg: dict, mode: str = "") -> list:
     def tier(i) -> int:
         if is_fixed(cfg, i):
             return 9 if mode == "fixed_last" else 8
-        if i.scanned and i.daily == "failed" and not i.excluded:
-            return 0          # 未完成优先：还没做日常的排最前
+        if effective_failed(cfg, i):
+            return 0          # 未完成优先（含手动设为未完成）：还没做日常的排最前
         if i.has_error:
             return 1
         if i.suspicious:
@@ -1503,6 +1584,9 @@ class Engine:
         cancel 由调用方在启动 worker 前清理；这里再 clear 会把用户刚点下的
         「停止」一起抹掉（GUI 线程 set 与 worker 启动之间存在竞态）。
         """
+        # 新一轮检查开始：清掉总览右键设置的手动已完成/未完成，让真实结果接管
+        # （「已修复」标记是持久化的，不在这里清）
+        clear_manual_states(self.cfg)
         total = len(games)
         failed: List[str] = []
         success: List[str] = []
