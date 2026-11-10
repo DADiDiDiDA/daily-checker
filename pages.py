@@ -1504,7 +1504,8 @@ class AddGameDialog(ThemedDialog):
         self.body.addWidget(_label(
             "填这个游戏用的「自动化程序目录」（根目录即可）；程序会到它下面的 "
             "logs / log / debug / .log 日志文件夹里找完成关键字。"
-            "检查的是自动化程序写出来的日志，不是游戏自己的日志。",
+            "检查的是自动化程序写出来的日志，不是游戏自己的日志。"
+            "扫描哪些扩展名由所引用规则里的「扫描文件后缀」决定，不再单独设置。",
             11, "text_muted", wrap=True))
 
         self.name_edit = _edit("游戏名，如「鸣潮」", editing.get("name", ""))
@@ -1525,9 +1526,6 @@ class AddGameDialog(ThemedDialog):
         fl.addWidget(browse)
         self._field("扫描自动化程序目录", box)
 
-        self.ext_edit = _edit("默认 .log；留空 = 不限制扩展名",
-                              editing.get("ext", ".log"))
-        self._field("扩展名", self.ext_edit)
         self.msg_edit = _edit("完成提示语，留空 = 「<游戏名>日常已完成！」",
                               editing.get("success_message", ""))
         self._field("完成提示", self.msg_edit)
@@ -1572,9 +1570,11 @@ class AddGameDialog(ThemedDialog):
         self.preview.setToolTip(text)
 
     def value(self) -> dict:
+        # v1.7.4：游戏级「扩展名」字段已删，扫描后缀统一由引用规则的「扫描文件后缀」决定；
+        # 这里回传空串仅为了兼容 core.add_game 的签名（不再写进新配置）。
         return {"name": self.name_edit.text().strip(),
                 "folder": self.folder_edit.text().strip(),
-                "ext": self.ext_edit.text().strip(),
+                "ext": "",
                 "success_message": self.msg_edit.text().strip(),
                 "rule_id": self.rule_combo.value()}
 

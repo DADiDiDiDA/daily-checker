@@ -25,7 +25,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.7.4"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -378,14 +378,17 @@ def rule_of(cfg: dict, game_name: str) -> dict:
     ft = str((ck.get("file_targets") or {}).get(game_name, "")).strip()
     return {"id": "", "name": "旧版自定义（未绑定规则）",
             "methods": [m for m in methods if m in METHOD_KEYS] or [DEFAULT_METHOD],
-            "keyword": g.target if g else "", "file_target": ft, "ext": "",
+            "keyword": g.target if g else "", "file_target": ft,
+            "ext": (g.extension if g else "") or "",
             "note": "旧配置里的单游戏判断方式；在界面里绑一条规则即可统一管理"}
 
 
 def rule_ext(rule: dict, game: Optional[GameConfig]) -> Optional[str]:
-    """规则里的扩展名覆盖；为空则沿用游戏自己的扩展名。"""
-    ext = str((rule or {}).get("ext") or "").strip()
-    return ext or (game.extension if game else None)
+    """扩展名统一由规则库的「扫描文件后缀」决定（v1.7.4 起）。
+
+    空 = 不过滤，扫描所有文件。旧配置未绑定规则的游戏，rule_of 合成时
+    已把游戏自带的 extension 并进规则，行为不变。"""
+    return str((rule or {}).get("ext") or "").strip() or None
 
 
 def parse_exts(ext: Optional[str]) -> Optional[List[str]]:
@@ -1175,14 +1178,22 @@ def sort_summary_items(items: list, cfg: dict, mode: str = "") -> list:
         return sorted(items, key=lambda i: i.name)
 
     def tier(i) -> int:
-        if is_fixed(cfg, i):
-            return 9 if mode == "fixed_last" else 8
         if effective_failed(cfg, i):
-            return 0          # 未完成优先（含手动设为未完成）：还没做日常的排最前
+            return 0          # 未完成最优先（即使被标了已修复——还没做完的先看见）
+        if mode == "fixed_last":
+            if i.has_error:
+                return 1
+            if i.suspicious:
+                return 3
+            if is_fixed(cfg, i):
+                return 9      # 已修复置底
+            return 2
+        if is_fixed(cfg, i):
+            return 8          # 已修复倒数第二
         if i.has_error:
             return 1
         if i.suspicious:
-            return 3 if mode == "fixed_last" else 9
+            return 9          # 存疑最后
         return 2
 
     return sorted(items, key=lambda i: (tier(i), i.name))

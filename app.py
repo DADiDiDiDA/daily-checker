@@ -363,7 +363,7 @@ class MainWindow(QWidget):
 
         self.nav_fm = NavButton("fm", "", "文件夹关键词映射", sub=True)
         self.nav_rules = NavButton("rules", "", "规则库", sub=True)
-        self.nav_game_rules = NavButton("game_rules", "", "游戏 → 规则", sub=True)
+        self.nav_game_rules = NavButton("game_rules", "", "程序检查规则", sub=True)
         self.sub_navs = [self.nav_fm, self.nav_rules, self.nav_game_rules]
         self.sub_holder = QWidget()
         flat(self.sub_holder)
@@ -674,8 +674,8 @@ class MainWindow(QWidget):
 
     # ---------- 导航 ----------
     SUB_KEYS = ("fm", "rules", "game_rules")
-    TITLES = {"home": "总览", "games": "游戏列表", "fm": "判定规则 · 文件夹关键词映射",
-              "rules": "判定规则 · 规则库", "game_rules": "判定规则 · 程序检查规则",
+    TITLES = {"home": "总览", "games": "游戏列表", "fm": "文件夹关键词映射",
+              "rules": "规则库", "game_rules": "程序检查规则",
               "settings": "设置"}
     PAGE_INDEX = {"home": 0, "games": 1, "fm": 2, "rules": 3,
                   "game_rules": 4, "settings": 5}
