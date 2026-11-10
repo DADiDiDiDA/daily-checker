@@ -166,20 +166,28 @@ class TrayIcon(QSystemTrayIcon):
 
     # ---------- 状态 ----------
     def set_tooltip(self, last_check: str, updates: int) -> None:
-        self._last_check = last_check or self._last_check
+        # 空字符串表示「清空时间」，None 才表示「不修改」（原来用 or 让空串无法清空）
+        if last_check is None:
+            last_check = self._last_check
+        self._last_check = last_check
         self._updates = int(updates or 0)
-        when = _elapsed_text(self._last_check)
-        if self._last_check:
+        lines = [core.APP_NAME]
+        if not self._last_check:
+            lines.append("尚未检查")
+        else:
+            when = _elapsed_text(self._last_check)
             when = f"{when}（{_stamp_text(self._last_check)}）"
-        lines = [core.APP_NAME, f"上次检查：{when}"]
+            lines.append(f"上次检查：{when}")
         if self._busy:
             lines.append("正在检查中…")
+        elif not self._last_check:
+            lines.append("点击「立即检查」开始")
         elif self._updates > 0:
             lines.append(f"{self._updates} 个游戏需要关注")
         else:
             lines.append("一切正常")
         self.setToolTip("\n".join(lines))
-        self.act_notify.setEnabled(self._updates >= 0 and not self._busy)
+        self.act_notify.setEnabled(bool(self._last_check) and not self._busy)
         self.act_check.setEnabled(not self._busy)
         self.setIcon(badge_icon(self.base_icon, self._updates))
 

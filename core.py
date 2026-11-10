@@ -24,7 +24,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -555,6 +555,9 @@ def load_config() -> dict:
         for k, v in stored.items():
             if k in cfg and isinstance(cfg[k], dict) and isinstance(v, dict):
                 cfg[k].update(v)
+            elif k in cfg and isinstance(cfg[k], dict) and v is None:
+                # 配置里写 null（手动改坏/旧版导出）会导致 .get() 崩溃，保留默认值
+                continue
             else:
                 cfg[k] = v
     except FileNotFoundError:
@@ -570,12 +573,15 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    try:
-        os.makedirs(cache_dir(), exist_ok=True)
-        with open(config_path(), "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    """原子写配置：临时文件 + os.replace，避免写一半崩溃留下截断 JSON 导致下次启动配置丢失。"""
+    os.makedirs(cache_dir(), exist_ok=True)
+    p = config_path()
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
 
 
 def rule_text_bare(rule: dict) -> str:
@@ -704,7 +710,8 @@ def get_notify_channels(cfg: dict) -> List[str]:
         return [c for c in raw if c in ("dingtalk", "windows")]
     ch = str(ding.get("channel", ""))
     if ch in ("dingtalk", "windows"):
-        return [ch]
+        # 旧配置单值 channel 分支也必须尊重 enabled：明确关闭就一条都不发
+        return [ch] if ding.get("enabled", True) else []
     return ["dingtalk"] if ding.get("enabled", True) else []
 
 
@@ -882,6 +889,48 @@ def format_size(size_bytes: int) -> str:
 
 # ==================== 引擎 ====================
 
+def _file_contains(path: str, target: str) -> bool:
+    """分块读取判断文件是否含关键字，避免超大日志一次性 read() 撑爆内存。
+
+    保留 len(target)-1 字节重叠处理跨块命中；同时兼容 GBK 等非 UTF-8 中文日志。"""
+    need = target.encode("utf-8")
+    if not need:
+        return False
+    overlap = len(need) - 1
+    with open(path, "rb") as f:
+        buf = b""
+        while True:
+            chunk = f.read(256 * 1024)
+            if not chunk:
+                break
+            if overlap > 0:
+                data = buf + chunk
+                buf = chunk[-overlap:] if len(chunk) > overlap else chunk
+            else:
+                data = chunk
+            if need in data:
+                return True
+        # 兜底：如果 UTF-8 字节没命中，可能是 GBK 编码，再按 GBK 试一次
+        if _contains_gbk(path, target):
+            return True
+    return False
+
+
+def _contains_gbk(path: str, target: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(2 * 1024 * 1024)   # 兜底扫描限 2MB，避免超大文件二次全读
+        for enc in ("gb18030", "gbk", "utf-8-sig"):
+            try:
+                if target in raw.decode(enc):
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 class Engine:
     """扫描 / 检查引擎。耗时操作在 worker 线程里跑，cancel 可中途停止。"""
 
@@ -913,12 +962,15 @@ class Engine:
             return default
 
     def save_error_state(self, state: Dict) -> None:
-        try:
-            os.makedirs(self._cache_root(), exist_ok=True)
-            with open(self._state_path(), "w", encoding="utf-8") as f:
-                json.dump(state, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        """原子写状态：写一半崩溃会导致连续无错天数/错误记录丢失。"""
+        os.makedirs(self._cache_root(), exist_ok=True)
+        p = self._state_path()
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
 
     def save_daily_log(self, success: List[str], failed: List[str],
                        suspicious: Dict[str, int]) -> None:
@@ -1005,6 +1057,10 @@ class Engine:
         today_only = method in ("keyword_today", "log_today")
         if not os.path.exists(folder):
             return False, 0, f"日志目录不存在：{folder}"
+        # 空关键字必须拒绝："" in 任意字符串恒为真，会让「未绑定规则」的游戏只要
+        # 目录里有文件就被误判成「日常完成」
+        if not (target or "").strip():
+            return False, 0, "未设置完成关键字"
         if method == "log_today":
             names = cls._files_of(folder, ext, today_only=True)
             return (True, len(names), "") if names else (False, 0, "")
@@ -1014,10 +1070,9 @@ class Engine:
             for name in names:
                 path = os.path.join(folder, name)
                 try:
-                    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                        scanned += 1
-                        if target in fh.read():
-                            return True, scanned, ""
+                    scanned += 1
+                    if _file_contains(path, target):
+                        return True, scanned, ""
                 except Exception:
                     continue
             return False, scanned, ""
@@ -1204,10 +1259,18 @@ class Engine:
             return {"cancelled": True}
 
         # 异常监控：扫 on_error / screencap，并把日常失败纳入无错天数清零
-        if error_check_enabled(self.cfg) and get_target_folders(self.cfg):
-            error_found = self.scan_errors(games)
+        error_scan_status = "completed"
+        if not error_check_enabled(self.cfg):
+            error_scan_status = "disabled"
+            error_found = {}
+        elif not get_target_folders(self.cfg):
+            error_scan_status = "disabled"      # 没有要监控的目录，等同关闭
+            error_found = {}
         else:
-            error_found = {}                # 用户关闭了文件夹异常检测
+            error_found = self.scan_errors(games)
+            if self.cancel.is_set():
+                # 异常扫描被取消：绝不能拿半截结果更新无错天数 / 写日报
+                return {"cancelled": True}
         folder_error_games = sorted(error_found.keys())
         excluded_disp = set(get_excluded(self.cfg))
         folder_map = get_folder_map(self.cfg)
@@ -1235,7 +1298,7 @@ class Engine:
             "failed": failed,
             "suspicious": suspicious,
             "folder_errors": error_found,
-            "error_games": sorted(set(folder_error_games) | set(failed) & set(all_games)),
+            "error_scan_status": error_scan_status,
         }
 
     def _maawork_dirs(self) -> List[str]:
@@ -1346,6 +1409,8 @@ class Engine:
         secret = (ding.get("secret") or "").strip()
         if not webhook:
             return False, "未配置 Webhook"
+        if not webhook.lower().startswith("https://"):
+            return False, "仅支持 https:// 的 Webhook（http 会明文泄露 access_token）"
         try:
             if secret:
                 ts = str(round(time.time() * 1000))
@@ -1353,15 +1418,21 @@ class Engine:
                     base64.b64encode(hmac.new(secret.encode("utf-8"),
                                               f"{ts}\n{secret}".encode("utf-8"),
                                               hashlib.sha256).digest()))
-                url = f"{webhook}&timestamp={ts}&sign={sign}"
+                # 用 urlparse 正确合并 query：先移除旧 timestamp/sign，再追加，避免重复参数/fragment 错位
+                parts = urllib.parse.urlsplit(webhook)
+                q = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+                q = [(k, v) for k, v in q if k not in ("timestamp", "sign")]
+                q += [("timestamp", ts), ("sign", sign)]
+                url = urllib.parse.urlunsplit(
+                    (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(q), ""))
             else:
                 url = webhook
             msg = {"msgtype": "text", "text": {"content": content}}
             req = urllib.request.Request(
                 url, data=json.dumps(msg).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST")
-            resp = urllib.request.urlopen(req, timeout=10)
-            body = resp.read().decode("utf-8")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read(64 * 1024).decode("utf-8", errors="replace")
             try:
                 data = json.loads(body)
                 ok = int(data.get("errcode", -1)) == 0
@@ -1371,7 +1442,7 @@ class Engine:
             return ok, ("发送成功" if ok else detail)
         except urllib.error.HTTPError as e:
             try:
-                detail = e.read().decode("utf-8")
+                detail = e.read(64 * 1024).decode("utf-8", errors="replace")
             except Exception:
                 detail = "无响应体"
             return False, f"HTTP {e.code}: {detail}"

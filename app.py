@@ -24,8 +24,8 @@ import autostart
 from backdrop import BACKDROP
 from pages import (AddGameDialog, DashboardView, ExcludeDialog, FolderMapDialog, GamesPage,
                    GameRuleDialog, MethodsPages, NotifyPreviewDialog, RuleDialog, ScanDirDialog,
-                   SettingsPage, ThresholdDialog, ThemedDialog, _label)
-from theme import build_qss, flat, qc, scoped, tint, GLYPH, THEME
+                   SettingsPage, ThresholdDialog)
+from theme import build_qss, flat, qc, tint, GLYPH, THEME, glyph_font
 from tray import TrayIcon
 from widgets import NavButton, Toast
 
@@ -165,15 +165,19 @@ class NotifyWorker(QThread):
     def run(self):
         ok = 0
         total = len(self.messages)
-        for i, (title, content) in enumerate(self.messages):
-            if self.cancel.is_set():
-                break
-            self.step.emit(title)
-            good, _ = core.Engine.send_dingtalk(self.engine.cfg, content)
-            ok += 1 if good else 0
-            if i == total - 2 and total >= 2:
-                time.sleep(2)           # 原脚本：汇总前停 2s
-        self.done.emit(ok, total)
+        try:
+            for i, (title, content) in enumerate(self.messages):
+                if self.cancel.is_set():
+                    break
+                self.step.emit(title)
+                good, _ = core.Engine.send_dingtalk(self.engine.cfg, content)
+                ok += 1 if good else 0
+                # 原脚本：发完倒数第二条后、发最后一条（汇总）前停 2s
+                if i == total - 2 and total >= 2:
+                    if self.cancel.wait(2):
+                        break
+        finally:
+            self.done.emit(ok, total)
 
 
 # ---------------------------------------------------------------- 窗口按钮
@@ -565,8 +569,7 @@ class MainWindow(QWidget):
         g.setColorAt(0, QColor(60, 202, 168))
         g.setColorAt(1, QColor(23, 138, 108))
         painter.fillPath(path, g)
-        f = QFont("Segoe Fluent Icons")
-        f.setPixelSize(15)
+        f = glyph_font(15)
         painter.setFont(f)
         painter.setPen(QPen(qc("#FFFFFF", 0.96)))
         painter.drawText(rect, Qt.AlignCenter, GLYPH["check"])
@@ -774,29 +777,40 @@ class MainWindow(QWidget):
         self._shutting_down = True
         self._quitting = True
         self.engine.cancel.set()
-        for name in ("check_worker", "notify_worker"):
-            w = getattr(self, name, None)
-            if w is None:
-                continue
-            wc = getattr(w, "cancel", None)
-            if wc is not None and hasattr(wc, "set"):
-                wc.set()
-            if w.isRunning():
-                w.wait(8000)
-        self._save_cfg()
-        if self.tray is not None:
-            self.tray.hide()
-        QApplication.quit()
+        try:
+            for name in ("check_worker", "notify_worker", "_ding_test_worker"):
+                w = getattr(self, name, None)
+                if w is None:
+                    continue
+                wc = getattr(w, "cancel", None)
+                if wc is not None and hasattr(wc, "set"):
+                    wc.set()
+                if w.isRunning():
+                    if not w.wait(8000):
+                        # 通知线程最长可达 42s（4 条消息 + 停顿），仍在跑就销毁会崩溃，
+                        # 延长等待，绝不静默放行
+                        w.wait(40000)
+        finally:
+            # 保存失败不能阻断退出，否则下次退出因 _shutting_down 直接 return
+            try:
+                self._save_cfg()
+            except Exception:
+                pass
+            if self.tray is not None:
+                self.tray.hide()
+            QApplication.quit()
 
     def quit_app(self) -> None:
         self._shutdown()
 
     # ---------- 数据与检查 ----------
     def _attention_count(self) -> int:
+        # 关注数应含存疑，否则只有存疑时托盘仍显示「一切正常」
         return sum(1 for i in self.games if not i.excluded
-                   and (i.has_error or (i.scanned and i.daily == "failed")))
+                   and (i.has_error or (i.scanned and i.daily == "failed") or i.suspicious))
 
     def _update_brand(self) -> None:
+        import html as _html
         n_err = sum(1 for i in self.games if i.has_error)
         n_fail = sum(1 for i in self.games
                      if i.scanned and i.daily == "failed" and not i.excluded)
@@ -806,6 +820,8 @@ class MainWindow(QWidget):
             scan = first + (f" 等 {len(dirs)} 个" if len(dirs) > 1 else "")
         else:
             scan = "未设置"
+        # 目录名可能含 <>& 等字符，必须转义，否则会被当富文本格式渲染
+        scan = _html.escape(scan)
         self.side_status.setText(
             f'<p style="margin:0;line-height:160%">监控目录 {scan}</p>'
             f'<p style="margin:4px 0 0 0;line-height:160%">游戏 {len(self.games)} 款'
