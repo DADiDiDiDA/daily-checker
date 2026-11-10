@@ -36,6 +36,8 @@ def _label(text: str, size: int = 13, color_key: str = "text", bold: bool = Fals
     lbl.setFont(f)
     if not wrap:
         lbl.setWordWrap(False)
+    # 记下用的是哪个调色板键，主题切换时 refresh_theme 会据此重刷文字色
+    lbl.setProperty("_fg_key", color_key)
     tint(lbl, getattr(p, color_key))
     return lbl
 
@@ -2187,6 +2189,7 @@ class SettingsPage(QWidget):
     # ---------- 主题刷新 ----------
     def refresh_theme(self) -> None:
         self._style_segmented()
+        p = THEME.p
         for card in self.findChildren(Card):
             card.update()
         for tab in (self.tab_general, self.tab_about):
@@ -2202,3 +2205,8 @@ class SettingsPage(QWidget):
             row.refresh_theme()
         for grp in self.findChildren(SettingGroup):
             grp.refresh_theme()
+        # 通用兜底：_label() 生成的静态标签也带内联 tint，按记录的颜色键统一重刷
+        for w in self.findChildren(QWidget):
+            key = w.property("_fg_key")
+            if key:
+                tint(w, getattr(p, key, p.text))
