@@ -1508,7 +1508,7 @@ class AddGameDialog(ThemedDialog):
             "扫描哪些扩展名由所引用规则里的「扫描文件后缀」决定，不再单独设置。",
             11, "text_muted", wrap=True))
 
-        self.name_edit = _edit("游戏名，如「鸣潮」", editing.get("name", ""))
+        self.name_edit = _edit("游戏名", editing.get("name", ""))
         self._field("游戏名", self.name_edit)
 
         self.folder_edit = _edit(r"自动化程序目录，如 D:\Automate\XXX",
