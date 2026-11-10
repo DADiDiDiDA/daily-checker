@@ -964,7 +964,7 @@ class DashboardView(QWidget):
         self.summary_sort = ThemedCombo(core.SUMMARY_SORTS,
                                         core.DEFAULT_SUMMARY_SORT, 132)
         self.summary_sort.setToolTip(
-            "关注列表排序：状态优先 = 异常 → 未完成 → 已修复（倒数第二）→ 存疑（最后）")
+            "关注列表排序：未完成优先 = 未完成 → 异常 → 其它 → 已修复（倒数第二）→ 存疑（最后）")
         self.summary_sort.changed.connect(self.summary_sort_changed.emit)
         head.addWidget(self.summary_sort)
         sl.addLayout(head)

@@ -25,7 +25,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -122,7 +122,7 @@ DEFAULT_LOG_FOLDERS = ["logs", "log", "debug", ".log"]
 
 # 首页关注列表的排序方式（默认：已修复倒数第二、存疑最后）
 SUMMARY_SORTS = [
-    ("state", "状态优先"),
+    ("state", "未完成优先"),
     ("name", "按名称"),
     ("fixed_last", "已修复置底"),
     ("default", "默认顺序"),
@@ -1086,7 +1086,7 @@ def get_summary_sort(cfg: dict) -> str:
 
 
 def sort_summary_items(items: list, cfg: dict, mode: str = "") -> list:
-    """关注列表排序。默认「状态优先」：异常 → 未完成 → 已修复 → 存疑（最后）。"""
+    """关注列表排序。默认「未完成优先」：未完成 → 异常 → 其它 → 已修复（倒数第二）→ 存疑（最后）。"""
     mode = mode or get_summary_sort(cfg)
     if mode == "default":
         return sort_items(items, "failed_first")
@@ -1096,9 +1096,9 @@ def sort_summary_items(items: list, cfg: dict, mode: str = "") -> list:
     def tier(i) -> int:
         if is_fixed(cfg, i):
             return 9 if mode == "fixed_last" else 8
-        if i.has_error:
-            return 0
         if i.scanned and i.daily == "failed" and not i.excluded:
+            return 0          # 未完成优先：还没做日常的排最前
+        if i.has_error:
             return 1
         if i.suspicious:
             return 3 if mode == "fixed_last" else 9
