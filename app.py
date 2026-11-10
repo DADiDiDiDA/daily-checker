@@ -475,6 +475,7 @@ class MainWindow(QWidget):
         mp.games.game_rule_changed.connect(self.set_game_rule)
         mp.games.game_remove_requested.connect(self.remove_game)
         mp.games.game_threshold_changed.connect(self.set_game_threshold)
+        mp.games.config_changed.connect(self._save_cfg)
         mp.folder.folder_map_manage_requested.connect(self.manage_folder_map)
         mp.folder.log_folders_changed.connect(self.on_log_folders_changed)
 
@@ -1004,9 +1005,10 @@ class MainWindow(QWidget):
 
     # ---------- 其它交互 ----------
     def open_game_folder(self, key: str) -> None:
+        """打开这款游戏用的自动化程序根目录。"""
         it = next((i for i in self.games if i.key == key), None)
         if it:
-            core.open_in_explorer(os.path.dirname(os.path.normpath(it.folder)))
+            core.open_in_explorer(it.program_dir or os.path.normpath(it.folder))
 
     def open_game_debug(self, key: str) -> None:
         it = next((i for i in self.games if i.key == key), None)
@@ -1019,14 +1021,27 @@ class MainWindow(QWidget):
         core.open_in_explorer(it.debug_dir)
 
     def open_game_log(self, key: str) -> None:
-        """打开存放日志关键字的文件夹（it.folder 本身）。"""
+        """打开自动化程序目录下实际在用的那个日志文件夹。
+
+        folder 现在是程序根目录，日志在其下的 logs / log / debug / .log 里；
+        旧配置直接填到日志子目录时，program_dir 会自动退一层，结果一样。
+        """
         it = next((i for i in self.games if i.key == key), None)
         if not it:
             return
-        if not os.path.isdir(it.folder):
-            self.toast.show_text(f"日志目录不存在：{it.folder}", ok=False)
+        root = it.program_dir or os.path.normpath(it.folder)
+        target = ""
+        for name in core.get_log_folders(self.cfg):
+            p = os.path.join(root, name)
+            if os.path.isdir(p):
+                target = p
+                break
+        if not target:
+            target = it.folder
+        if not os.path.isdir(target):
+            self.toast.show_text(f"自动化程序日志文件夹不存在：{target}", ok=False)
             return
-        core.open_in_explorer(it.folder)
+        core.open_in_explorer(target)
 
     # ---------- 排序 / 手动顺序 ----------
     def on_sort_changed(self, regular: str, special: str) -> None:
@@ -1159,7 +1174,7 @@ class MainWindow(QWidget):
         v = dlg.value()
         if not core.add_game(self.cfg, v["name"], v["folder"], v["ext"],
                              v["success_message"], v["rule_id"]):
-            self.toast.show_text("添加失败：游戏名或日志目录为空", ok=False)
+            self.toast.show_text("添加失败：游戏名或自动化程序目录为空", ok=False)
             return
         self._save_cfg()
         self._reload_games()
@@ -1182,7 +1197,7 @@ class MainWindow(QWidget):
         it.rule = core.describe_rule(it.target, it.folder, it.extension,
                                      r.get("methods") or [core.DEFAULT_METHOD],
                                      r.get("file_target", ""), True,
-                                     core.get_log_folders(self.cfg, r)
+                                     core.get_log_folders(self.cfg)
                                      if core.log_folder_check_enabled(self.cfg) else None)
 
     def _after_rule_change(self, rescan: bool = False) -> None:
@@ -1281,13 +1296,11 @@ class MainWindow(QWidget):
         self.toast.show_text(f"排除名单已更新（{len(new)} 款）")
 
     def manage_folder_map(self) -> None:
-        """判定规则页「文件夹关键词映射 · 管理」：增删改文件夹名→游戏名。"""
-        ck = self.cfg.setdefault("check", {})
-        dlg = FolderMapDialog(self, ck.get("folder_map") or {})
+        """判定规则页「文件夹部分映射 · 管理」：编辑完整映射表（含内置 13 条）。"""
+        dlg = FolderMapDialog(self, core.get_folder_map(self.cfg))
         if not dlg.exec():
             return
-        new = dlg.values()
-        ck["folder_map"] = new
+        new = core.set_folder_map(self.cfg, dlg.values())
         self._save_cfg()
         # 映射影响异常监控展示名，立即重扫一遍异常文件夹
         if core.error_check_enabled(self.cfg) and core.get_target_folders(self.cfg):
@@ -1301,8 +1314,7 @@ class MainWindow(QWidget):
         if hasattr(self, "page_methods"):
             self.page_methods.refresh(self.cfg)
         self.toast.show_text(
-            f"文件夹映射已保存（{len(new)} 条自定义）" if new
-            else "文件夹映射已清空，使用内置默认映射")
+            f"文件夹映射已保存（共 {len(new)} 条，内置条目可随时恢复）")
 
     def manage_scan_dirs(self) -> None:
         """设置页「扫描目录 · 管理」：勾选根目录、排除子目录。"""

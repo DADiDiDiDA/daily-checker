@@ -24,7 +24,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.7.0"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -38,20 +38,22 @@ TARGET_DESC_MAP: Dict[str, str] = {
     "screencap": "捕获到错误截图",
 }
 
+# 程序文件夹「部分映射」：文件夹名里只要包含左侧关键词就算命中（不要求完全相等）。
+# 关键词里不再保留各自动化程序共有的 MFAA 前缀，短词同样能命中 MFAAxxx 这种真实目录名。
 FOLDER_NAME_MAP: Dict[str, str] = {
-    "MFAAWatcher-of-Realms": "潮汐守望者",
-    "MFAAE7": "第七史诗",
-    "MFAAResonance": "雷索纳斯",
-    "MFAAAFK-Journey": "剑与远征启程",
-    "MFAALily-Blade": "铃兰之剑",
-    "MFAAFGO": "FGO",
-    "MFAATDJ": "天地劫",
-    "MFAADragonheir": "龙息神迹",
-    "MFAAAligames": "坎公骑冠剑",
-    "MFAALangrisser": "梦幻模拟战",
-    "MFAAKes": "卡厄思梦境",
-    "MFAAMecharashi": "钢岚",
-    "MFAAXgame": "众神派对",
+    "Watcher-of-Realms": "潮汐守望者",
+    "E7": "第七史诗",
+    "Resonance": "雷索纳斯",
+    "AFK-Journey": "剑与远征启程",
+    "Lily-Blade": "铃兰之剑",
+    "FGO": "FGO",
+    "TDJ": "天地劫",
+    "Dragonheir": "龙息神迹",
+    "Aligames": "坎公骑冠剑",
+    "Langrisser": "梦幻模拟战",
+    "Kes": "卡厄思梦境",
+    "Mecharashi": "钢岚",
+    "Xgame": "众神派对",
 }
 
 # 默认不内置任何真实凭证：新设备必须由使用者自己填 Webhook / 加签密钥。
@@ -67,33 +69,35 @@ DEFAULT_DING = {
 @dataclass
 class GameConfig:
     name: str
-    folder: str                       # 日志目录（在里面搜关键字）
+    folder: str                       # 自动化程序根目录（程序到它下面的日志文件夹里搜关键字）
     target: str                       # 成功关键字
     extension: Optional[str]
     success_message: str
 
 
+# folder 一律填「自动化程序根目录」，日志文件夹由 DEFAULT_LOG_FOLDERS / 全局设置决定。
+# 旧配置里如果还填到 logs / log / debug / .log 这一层，program_dir_of() 会自动往上退一层。
 DAILY_GAMES: List[GameConfig] = [
-    GameConfig("原神", r"D:\Automate\BetterGI\log", '检查每日奖励结果："今日奖励已领取"', ".log", "原神日常已完成！"),
-    GameConfig("星铁", r"D:\Automate\March7thAssistant\logs", "每日实训奖励完成", ".log", "星铁日常已完成！"),
-    GameConfig("绝区零", r"D:\Automate\ZZZ-onedragon\.log", "指令[ 活跃度奖励 ] 执行成功 返回状态 成功", None, "绝区零日常已完成！"),
-    GameConfig("崩坏三", r"D:\Automate\Maa_bbb\debug", "所有任务都已完成", ".log", "崩坏三日常已完成！"),
-    GameConfig("1999", r"D:\Automate\M9A\logs", "任务已全部完成", ".log", "1999日常已完成！"),
-    GameConfig("明日方舟", r"D:\Automate\MAA\debug", "任务已全部完成！", ".log", "明日方舟日常已完成！"),
-    GameConfig("终末地", r"D:\Automate\MaaEnd\debug", "MXU_KILLPROC", ".log", "终末地日常已完成！"),
-    GameConfig("潮汐守望者", r"D:\Automate\My-maawork\MFAAWatcher-of-Realms\logs", "任务已全部完成！", ".log", "潮汐守望者日常已完成！"),
-    GameConfig("第七史诗", r"D:\Automate\My-maawork\MFAAE7\logs", "任务已全部完成！", ".log", "第七史诗日常已完成！"),
-    GameConfig("钢岚", r"D:\Automate\My-maawork\MFAAMecharashi\logs", "任务已全部完成！", ".log", "钢岚日常已完成！"),
-    GameConfig("雷索纳斯", r"D:\Automate\My-maawork\MFAAResonance\logs", "任务已全部完成！", ".log", "雷索纳斯日常已完成！"),
-    GameConfig("剑与远征启程", r"D:\Automate\My-maawork\MFAAAFK-Journey\logs", "任务已全部完成！", ".log", "剑与远征启程日常已完成！"),
-    GameConfig("铃兰之剑", r"D:\Automate\My-maawork\MFAALily-Blade\logs", "任务已全部完成！", ".log", "铃兰之剑日常已完成！"),
-    GameConfig("FGO", r"D:\Automate\My-maawork\MFAAFGO\logs", "任务已全部完成！", ".log", "FGO日常已完成！"),
-    GameConfig("天地劫", r"D:\Automate\My-maawork\MFAATDJ\logs", "任务已全部完成！", ".log", "天地劫日常已完成！"),
-    GameConfig("龙息神迹", r"D:\Automate\My-maawork\MFAADragonheir\logs", "任务已全部完成！", ".log", "龙息神迹日常已完成！"),
-    GameConfig("坎公骑冠剑", r"D:\Automate\My-maawork\MFAAAligames\logs", "任务已全部完成！", ".log", "坎公骑冠剑日常已完成！"),
-    GameConfig("梦幻模拟战", r"D:\Automate\My-maawork\MFAALangrisser\logs", "任务已全部完成！", ".log", "梦幻模拟战日常已完成！"),
-    GameConfig("卡厄思梦境", r"D:\Automate\My-maawork\MFAAKes\logs", "任务已全部完成！", ".log", "卡厄思梦境日常已完成！"),
-    GameConfig("众神派对", r"D:\Automate\My-maawork\MFAAXgame\logs", "任务已全部完成！", ".log", "众神派对日常已完成！"),
+    GameConfig("原神", r"D:\Automate\BetterGI", '检查每日奖励结果："今日奖励已领取"', ".log", "原神日常已完成！"),
+    GameConfig("星铁", r"D:\Automate\March7thAssistant", "每日实训奖励完成", ".log", "星铁日常已完成！"),
+    GameConfig("绝区零", r"D:\Automate\ZZZ-onedragon", "指令[ 活跃度奖励 ] 执行成功 返回状态 成功", None, "绝区零日常已完成！"),
+    GameConfig("崩坏三", r"D:\Automate\Maa_bbb", "所有任务都已完成", ".log", "崩坏三日常已完成！"),
+    GameConfig("1999", r"D:\Automate\M9A", "任务已全部完成", ".log", "1999日常已完成！"),
+    GameConfig("明日方舟", r"D:\Automate\MAA", "任务已全部完成！", ".log", "明日方舟日常已完成！"),
+    GameConfig("终末地", r"D:\Automate\MaaEnd", "MXU_KILLPROC", ".log", "终末地日常已完成！"),
+    GameConfig("潮汐守望者", r"D:\Automate\My-maawork\MFAAWatcher-of-Realms", "任务已全部完成！", ".log", "潮汐守望者日常已完成！"),
+    GameConfig("第七史诗", r"D:\Automate\My-maawork\MFAAE7", "任务已全部完成！", ".log", "第七史诗日常已完成！"),
+    GameConfig("钢岚", r"D:\Automate\My-maawork\MFAAMecharashi", "任务已全部完成！", ".log", "钢岚日常已完成！"),
+    GameConfig("雷索纳斯", r"D:\Automate\My-maawork\MFAAResonance", "任务已全部完成！", ".log", "雷索纳斯日常已完成！"),
+    GameConfig("剑与远征启程", r"D:\Automate\My-maawork\MFAAAFK-Journey", "任务已全部完成！", ".log", "剑与远征启程日常已完成！"),
+    GameConfig("铃兰之剑", r"D:\Automate\My-maawork\MFAALily-Blade", "任务已全部完成！", ".log", "铃兰之剑日常已完成！"),
+    GameConfig("FGO", r"D:\Automate\My-maawork\MFAAFGO", "任务已全部完成！", ".log", "FGO日常已完成！"),
+    GameConfig("天地劫", r"D:\Automate\My-maawork\MFAATDJ", "任务已全部完成！", ".log", "天地劫日常已完成！"),
+    GameConfig("龙息神迹", r"D:\Automate\My-maawork\MFAADragonheir", "任务已全部完成！", ".log", "龙息神迹日常已完成！"),
+    GameConfig("坎公骑冠剑", r"D:\Automate\My-maawork\MFAAAligames", "任务已全部完成！", ".log", "坎公骑冠剑日常已完成！"),
+    GameConfig("梦幻模拟战", r"D:\Automate\My-maawork\MFAALangrisser", "任务已全部完成！", ".log", "梦幻模拟战日常已完成！"),
+    GameConfig("卡厄思梦境", r"D:\Automate\My-maawork\MFAAKes", "任务已全部完成！", ".log", "卡厄思梦境日常已完成！"),
+    GameConfig("众神派对", r"D:\Automate\My-maawork\MFAAXgame", "任务已全部完成！", ".log", "众神派对日常已完成！"),
 ]
 
 DEFAULT_LOG_THRESHOLD_MB = 10
@@ -101,8 +105,9 @@ DEFAULT_LOG_THRESHOLD_MB = 10
 # 新设备上所有游戏都是 10；老配置里已经存下的单游戏阈值视为用户手动设置，原样保留。
 DEFAULT_GAME_THRESHOLDS: Dict[str, int] = {}
 
-# 「日志文件夹判定」：只在游戏程序根目录下的这几个文件夹里找关键字 / 检查目标文件，
+# 「日志文件夹判定」：只在「自动化程序根目录」下的这几个文件夹里找关键字 / 检查目标文件，
 # 每个文件夹只读顶层文件，不递归子目录，也不扫描程序里的其它文件夹。
+# 注意：这里看的是自动化程序（BetterGI / MAA / MFAA 等）自己写出来的日志，不是游戏的日志。
 DEFAULT_LOG_FOLDERS = ["logs", "log", "debug", ".log"]
 
 # 首页关注列表的排序方式（默认：已修复倒数第二、存疑最后）
@@ -118,13 +123,13 @@ DEFAULT_SUMMARY_SORT = "state"
 # 说明文字要写清「看哪些文件 / 比什么 / 以什么为准」，别只写「关键词匹配」
 METHODS = [
     ("keyword", "关键字（不限日期）",
-     "在日志目录里逐个打开 .log 读全文，内容里出现该游戏的完成关键字即算完成。"
-     "不看文件日期，几天前的旧日志命中也会算。"),
+     "在自动化程序目录下指定的日志文件夹里逐个打开 .log 读全文，"
+     "内容里出现该游戏的完成关键字即算完成。不看文件日期，几天前的旧日志命中也会算。"),
     ("keyword_today", "关键字（仅今天的日志）",
      "同上，但只打开修改时间是今天的 .log 读全文，"
      "避免把昨天或前几天的成功记录当成本次完成。"),
     ("log_today", "今天有新日志",
-     "不读日志内容：日志目录里只要有一个修改时间是今天的 .log 就算完成。"),
+     "不读日志内容：自动化程序的日志文件夹里只要有一个修改时间是今天的 .log 就算完成。"),
     ("file_exists", "特定文件已生成",
      "不读日志内容：目录里存在指定文件名的文件就算完成，不看日期。"
      "文件名写在规则里（「判定规则」页编辑规则时填）。"),
@@ -147,8 +152,8 @@ METHOD_SHORT = {
 
 # ==================== 判定规则库 ====================
 # 规则 = 「怎么判断日常完成」：判定方式（可多选）+ 关键字 / 文件名 + 可选扩展名覆盖。
-# 游戏只决定「看哪个日志目录」，规则本身可以给多款游戏共用（例：MAA 系十几个游戏
-# 都是「日志里出现『任务已全部完成！』」）。改一条规则，引用它的游戏全部跟着变。
+# 游戏只决定「看哪个自动化程序目录」，规则本身可以给多款游戏共用（例：MAA 系十几个
+# 游戏都是「自动化程序日志里出现『任务已全部完成！』」）。改一条规则，引用的游戏全部跟着变。
 
 BUILTIN_RULES: List[Dict] = [
     {"id": "r_genshin", "name": "原神 · 今日奖励已领取",
@@ -249,8 +254,6 @@ def _norm_rule(raw: dict) -> dict:
         "keyword": str(raw.get("keyword") or "").strip(),
         "file_target": str(raw.get("file_target") or "").strip(),
         "ext": str(raw.get("ext") or "").strip(),
-        # 只扫这些「程序根目录下的日志文件夹」；留空 = 跟随全局设置
-        "folders": str(raw.get("folders") or "").strip(),
         "note": str(raw.get("note") or "").strip(),
     }
 
@@ -370,7 +373,6 @@ def rule_of(cfg: dict, game_name: str) -> dict:
     return {"id": "", "name": "旧版自定义（未绑定规则）",
             "methods": [m for m in methods if m in METHOD_KEYS] or [DEFAULT_METHOD],
             "keyword": g.target if g else "", "file_target": ft, "ext": "",
-            "folders": "",
             "note": "旧配置里的单游戏判断方式；在界面里绑一条规则即可统一管理"}
 
 
@@ -390,12 +392,12 @@ def describe_rule(keyword: str, folder: str, ext: Optional[str],
                   with_folder: bool = True, folders: Optional[List[str]] = None) -> str:
     """把判断方式翻译成一句可核对的具体规则：看哪些文件、比什么、以什么为准。
 
-    with_folder=False 时用「日志目录」代替完整路径（界面里一行放得下）。"""
+    with_folder=False 时用「自动化程序日志」代替完整路径（界面里一行放得下）。"""
     ext_txt = f" *{ext} " if ext else "文件"      # 带扩展名时是 " *.log "，否则直接「文件」
     if with_folder:
         where, lead = f"{folder} 下", "读 "
     else:
-        where, lead = "日志目录下", "读"
+        where, lead = "自动化程序日志下", "读"
     kw = f"「{keyword}」" if keyword else "完成关键字"
     out = []
     for m in methods:
@@ -411,18 +413,18 @@ def describe_rule(keyword: str, folder: str, ext: Optional[str],
             out.append(f"{where}「{file_target or '未设置文件名'}」存在且今天修改过才算完成")
     text = "；或 ".join(out)
     if folders:
-        text += f"；只查程序根目录下的 {'、'.join(folders)}，不递归子目录"
+        text += f"；只查自动化程序目录下的 {'、'.join(folders)} 日志文件夹，不递归子目录"
     return text
 
 
 def rule_text(cfg: dict, game: GameConfig, rule: Optional[dict] = None,
               with_folder: bool = True) -> str:
-    """把「规则 + 游戏日志目录」翻译成一句可核对的话。"""
+    """把「规则 + 自动化程序目录」翻译成一句可核对的话。"""
     r = rule or rule_of(cfg, game.name)
     return describe_rule(rule_keyword(r, game), game.folder, rule_ext(r, game),
                          r.get("methods") or [DEFAULT_METHOD],
                          r.get("file_target", ""), with_folder,
-                         get_log_folders(cfg, r) if log_folder_check_enabled(cfg) else None)
+                         get_log_folders(cfg) if log_folder_check_enabled(cfg) else None)
 
 
 def rule_name_of(cfg: dict, game_name: str) -> str:
@@ -452,7 +454,7 @@ def describe_failure(keyword: str, ext: Optional[str], methods: List[str],
         parts.append("未满足判断方式")
     head = " 或 ".join(parts)
     if not folder_exists:
-        return f"{head} · 日志目录不存在"
+        return f"{head} · 自动化程序日志文件夹不存在"
     if ft and not kw:
         return head                     # 文件方式只比文件，不用报扫描数
     if scanned:
@@ -570,6 +572,7 @@ def load_config() -> dict:
                   "fixed_marks": {},             # 关注列表里手动标记「已修复」的游戏
                   "summary_sort": DEFAULT_SUMMARY_SORT,
                   "folder_map": {},
+                  "folder_map_removed": [],
                   "file_targets": {},
                   "sort_mode": DEFAULT_SORT,
                   "sort_special": DEFAULT_SORT_SPECIAL,
@@ -614,8 +617,7 @@ def rule_text_bare(rule: dict) -> str:
     """规则库列表里的一句话说明（不涉及具体游戏的目录）。"""
     return describe_rule(rule.get("keyword", ""), "", rule.get("ext") or None,
                          rule.get("methods") or [DEFAULT_METHOD],
-                         rule.get("file_target", ""), with_folder=False,
-                         folders=parse_folder_names(rule.get("folders")) or None)
+                         rule.get("file_target", ""), with_folder=False)
 
 
 def set_game_rule(cfg: dict, game_name: str, rule_id: str) -> None:
@@ -700,7 +702,7 @@ def get_methods(cfg: dict, game_name: str) -> List[str]:
 
 
 def get_file_target(cfg: dict, game_name: str) -> str:
-    """file_exists / file_today 方式要检测的文件名（相对日志目录），来自规则。"""
+    """file_exists / file_today 方式要检测的文件名（相对自动化程序日志文件夹），来自规则。"""
     return str(rule_of(cfg, game_name)["file_target"]).strip()
 
 
@@ -800,14 +802,69 @@ def get_default_methods(cfg: dict) -> List[str]:
 
 
 def get_folder_map(cfg: dict) -> Dict[str, str]:
-    """文件夹关键词 → 游戏显示名；用户配置叠加在默认映射之上。"""
+    """文件夹关键词 → 游戏显示名；内置 13 条可编辑 / 可删，用户配置叠加其上。"""
+    ck = cfg.get("check") or {}
     merged = dict(FOLDER_NAME_MAP)
-    extra = (cfg.get("check") or {}).get("folder_map") or {}
+    for k in (ck.get("folder_map_removed") or []):
+        merged.pop(str(k), None)
+    extra = ck.get("folder_map") or {}
     for k, v in extra.items():
         k, v = str(k).strip(), str(v).strip()
         if k and v:
             merged[k] = v
     return merged
+
+
+def set_folder_map(cfg: dict, mapping: dict) -> Dict[str, str]:
+    """把界面编辑后的「完整映射表」写回配置。
+
+    内置条目被删 / 改名时记进 folder_map_removed，否则下次启动又被内置表补回来。
+    """
+    ck = cfg.setdefault("check", {})
+    clean: Dict[str, str] = {}
+    for k, v in (mapping or {}).items():
+        k, v = str(k).strip(), str(v).strip()
+        if k and v:
+            clean[k] = v
+    removed = sorted(k for k in FOLDER_NAME_MAP if k not in clean)
+    extra = {k: v for k, v in clean.items()
+             if k not in FOLDER_NAME_MAP or FOLDER_NAME_MAP[k] != v}
+    if removed:
+        ck["folder_map_removed"] = removed
+    else:
+        ck.pop("folder_map_removed", None)
+    ck["folder_map"] = extra
+    return clean
+
+
+def reset_folder_map(cfg: dict) -> Dict[str, str]:
+    """恢复内置 13 条映射（清掉所有自定义与删除记录）。"""
+    ck = cfg.setdefault("check", {})
+    ck.pop("folder_map_removed", None)
+    ck["folder_map"] = {}
+    return dict(FOLDER_NAME_MAP)
+
+
+def folder_keyword_hit(name: str, folder_map: dict) -> bool:
+    """部分映射：文件夹名里只要包含任一关键词就算命中（大小写不敏感）。"""
+    low = str(name or "").lower()
+    return any(k and str(k).lower() in low for k in folder_map)
+
+
+def resolve_folder_name(name: str, folder_map: dict) -> str:
+    """把程序文件夹名解析成游戏显示名：完全相等优先，否则取最长的命中关键词。
+
+    最长优先是为了避免短关键词（如 E7 / FGO）抢走更具体的匹配。
+    """
+    if name in folder_map:
+        return folder_map[name]
+    low = str(name or "").lower()
+    best = ""
+    for k in folder_map:
+        kk = str(k)
+        if kk and kk.lower() in low and len(kk) > len(best):
+            best = kk
+    return folder_map.get(best, name) if best else name
 
 
 def get_scan_dirs(cfg: dict) -> List[str]:
@@ -932,11 +989,8 @@ def parse_folder_names(raw) -> List[str]:
     return out
 
 
-def get_log_folders(cfg: dict, rule: Optional[dict] = None) -> List[str]:
-    """生效的日志文件夹名列表：规则自己填的优先，否则用全局设置。"""
-    own = parse_folder_names((rule or {}).get("folders"))
-    if own:
-        return own
+def get_log_folders(cfg: dict) -> List[str]:
+    """生效的日志文件夹名列表（全局设置；规则不再单独指定目录）。"""
     raw = (cfg.get("check") or {}).get("log_folders")
     if raw is None:
         return list(DEFAULT_LOG_FOLDERS)
@@ -952,6 +1006,21 @@ def set_log_folders(cfg: dict, folders) -> List[str]:
     else:
         ck["log_folders"] = clean
     return clean
+
+
+def program_dir_of(folder: str, cfg: Optional[dict] = None) -> str:
+    """由「自动化程序目录」推出程序根目录。
+
+    新版直接填程序根目录（...\\MFAAFGO），原样返回；旧版填的是日志子目录
+    （...\\MFAAFGO\\logs），自动往上退一层，让老配置里的自定义游戏不用手动迁移。
+    """
+    p = os.path.normpath(str(folder or "").strip())
+    if not p:
+        return ""
+    names = {x.lower() for x in DEFAULT_LOG_FOLDERS}
+    if cfg:
+        names |= {x.lower() for x in get_log_folders(cfg)}
+    return os.path.dirname(p) if os.path.basename(p).lower() in names else p
 
 
 # ---------- 关注列表：手动标记「已修复」+ 排序 ----------
@@ -1140,7 +1209,7 @@ class Engine:
         scan_roots = [os.path.normpath(d).lower()
                       for d in get_scan_dirs(self.cfg) if str(d).strip()]
         for g in all_games(self.cfg):
-            program_dir = os.path.dirname(os.path.normpath(g.folder))
+            program_dir = program_dir_of(g.folder, self.cfg)
             pd = os.path.normpath(program_dir).lower()
             rule = rule_of(self.cfg, g.name)
             it = Game(
@@ -1158,7 +1227,7 @@ class Engine:
             it.rule = describe_rule(it.target, it.folder, it.extension,
                                     rule.get("methods") or [DEFAULT_METHOD],
                                     rule.get("file_target", ""), True,
-                                    get_log_folders(self.cfg, rule)
+                                    get_log_folders(self.cfg)
                                     if log_folder_check_enabled(self.cfg) else None)
             games.append(it)
         return games
@@ -1192,7 +1261,7 @@ class Engine:
                          method: str = "keyword") -> Tuple[bool, int, str]:
         today_only = method in ("keyword_today", "log_today")
         if not os.path.exists(folder):
-            return False, 0, f"日志目录不存在：{folder}"
+            return False, 0, f"自动化程序日志文件夹不存在：{folder}"
         # 空关键字必须拒绝："" in 任意字符串恒为真，会让「未绑定规则」的游戏只要
         # 目录里有文件就被误判成「日常完成」
         if not (target or "").strip():
@@ -1243,7 +1312,7 @@ class Engine:
             if not file_target:
                 return False, 0, "未设置目标文件名"
             if not os.path.isdir(folder):
-                return False, 0, f"日志目录不存在：{folder}"
+                return False, 0, f"自动化程序日志文件夹不存在：{folder}"
             path = os.path.join(folder, file_target)
             if not os.path.exists(path):
                 return False, 0, ""
@@ -1259,16 +1328,16 @@ class Engine:
         return cls._search_in_files(folder, keyword, ext, method)
 
     def _candidate_folders(self, it: Game, rule: dict) -> List[str]:
-        """日志文件夹判定：游戏自带日志目录 + 程序根目录下指定的几个日志文件夹。
+        """日志文件夹判定：自动化程序目录 + 它下面指定的几个日志文件夹。
 
+        folder 现在是程序根目录；旧配置若仍指向日志子目录，它本身就是一个候选。
         只列这些目录的顶层文件，不递归子目录，也不会去翻程序里的其它文件夹。
-        关闭开关时退回旧行为（只查游戏自带的那一个目录）。
         """
         folders = [it.folder]
         if not log_folder_check_enabled(self.cfg):
             return folders
         seen = {os.path.normcase(os.path.normpath(it.folder))}
-        for name in get_log_folders(self.cfg, rule):
+        for name in get_log_folders(self.cfg):
             p = name if os.path.isabs(name) else os.path.join(it.program_dir, name)
             p = os.path.normpath(p)
             key = os.path.normcase(p)
@@ -1284,7 +1353,7 @@ class Engine:
         methods = rule.get("methods") or [DEFAULT_METHOD]
         file_target = str(rule.get("file_target") or "").strip()
         folders = self._candidate_folders(it, rule)
-        folder_names = (get_log_folders(self.cfg, rule)
+        folder_names = (get_log_folders(self.cfg)
                         if log_folder_check_enabled(self.cfg) else None)
         it.rule = describe_rule(it.target, it.folder, it.extension, methods,
                                 file_target, True, folder_names)
@@ -1296,7 +1365,7 @@ class Engine:
                 ok, n, err = self._match_method(folder, it.extension, m,
                                                 it.target, file_target)
                 scanned += n
-                # 附加文件夹不存在是常态，只报主日志目录的错误，别刷一屏
+                # 附加文件夹不存在是常态，只报主自动化程序目录的错误，别刷一屏
                 if err and idx == 0:
                     errs.append(err)
                 if ok:
@@ -1365,7 +1434,7 @@ class Engine:
         while True:
             name = os.path.basename(cur)
             if name:
-                mapped = folder_map.get(name, name)
+                mapped = resolve_folder_name(name, folder_map)
                 if mapped in by_name:
                     return mapped
             parent = os.path.dirname(cur)
@@ -1441,8 +1510,9 @@ class Engine:
         folder_error_games = sorted(error_found.keys())
         excluded_disp = set(get_excluded(self.cfg))
         folder_map = get_folder_map(self.cfg)
-        all_games = sorted(folder_map.get(n, n) for n in self._maawork_dirs()
-                           if folder_map.get(n, n) not in excluded_disp)
+        all_games = sorted(resolve_folder_name(n, folder_map)
+                           for n in self._maawork_dirs()
+                           if resolve_folder_name(n, folder_map) not in excluded_disp)
         self.update_streaks(all_games, set(folder_error_games), set(failed))
 
         # 把最新无错天数写回条目
@@ -1469,14 +1539,14 @@ class Engine:
         }
 
     def _maawork_dirs(self) -> List[str]:
-        names = set(get_folder_map(self.cfg).keys())
+        folder_map = get_folder_map(self.cfg)
         excludes = get_scan_excludes(self.cfg)
         out: List[str] = []
         for root in get_scan_dirs(self.cfg):
             try:
                 for n in os.listdir(root):
                     p = os.path.join(root, n)
-                    if os.path.isdir(p) and n in names \
+                    if os.path.isdir(p) and folder_keyword_hit(n, folder_map) \
                             and not is_excluded_dir(p, excludes) and n not in out:
                         out.append(n)
             except Exception:
@@ -1494,7 +1564,8 @@ class Engine:
         error_found: Dict[str, Set[str]] = result["folder_errors"]
         games_state = self.state.get("games", {}) or {}
         folder_map = get_folder_map(self.cfg)
-        all_games = sorted(folder_map.get(n, n) for n in self._maawork_dirs())
+        all_games = sorted(resolve_folder_name(n, folder_map)
+                           for n in self._maawork_dirs())
         error_games = set(error_found.keys()) | set(result["failed"])
         lines: List[str] = []
         if error_found:

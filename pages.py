@@ -465,7 +465,7 @@ class GameRuleRow(QWidget):
         l1.setSpacing(8)
         self.name_lbl = _label(game.name, 13, "text", bold=True)
         self.name_lbl.setFixedWidth(self.NAME_W)
-        self.name_lbl.setToolTip(f"日志目录：{game.folder}")
+        self.name_lbl.setToolTip(f"自动化程序目录：{game.folder}")
         l1.addWidget(self.name_lbl)
 
         items = [(r["id"], r["name"]) for r in rules]
@@ -478,7 +478,7 @@ class GameRuleRow(QWidget):
         # ---- 日志阈值：直接放在这一行上，改完即时生效 ----
         self.thr_lbl = _label("日志阈值", 10, "text_muted")
         self.thr_lbl.setToolTip(
-            f"debug 目录顶层 .log 合计超过该值标记为「存疑」；\n"
+            f"自动化程序 debug 日志文件夹顶层 .log 合计超过该值标记为「存疑」；\n"
             f"默认 {self._default_mb}MB，调成默认值就回到跟随默认")
         l1.addWidget(self.thr_lbl)
         self.thr = NumberStepper(core.get_threshold_mb(cfg, game.name), 1, 500, 1,
@@ -507,7 +507,7 @@ class GameRuleRow(QWidget):
         r = core.rule_of(self.cfg, self.game.name)
         self.rule_lbl.setText("匹配规则：" + core.rule_text(
             self.cfg, self.game, r, with_folder=False))
-        self.rule_lbl.setToolTip(f"日志目录：{self.game.folder}\n"
+        self.rule_lbl.setToolTip(f"自动化程序目录：{self.game.folder}\n"
                                  + core.rule_text(self.cfg, self.game, r))
 
     def _on_change(self, rid: str) -> None:
@@ -630,6 +630,7 @@ class GameRulesView(QWidget):
     game_rule_changed = Signal(str, str)
     game_remove_requested = Signal(str)
     game_threshold_changed = Signal(str, int)
+    config_changed = Signal()          # 日志阈值总开关 / 默认阈值变了
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
@@ -653,15 +654,41 @@ class GameRulesView(QWidget):
         add_game_btn.setObjectName("soft")
         add_game_btn.setCursor(Qt.PointingHandCursor)
         add_game_btn.setFixedHeight(30)
-        add_game_btn.setToolTip("添加一款新游戏：填日志目录，再从规则库里选一条规则")
+        add_game_btn.setToolTip("添加一款新游戏：填自动化程序目录，再从规则库里选一条规则")
         add_game_btn.clicked.connect(self.add_game_requested.emit)
         head.addWidget(add_game_btn)
         card.lay.addLayout(head)
         card.lay.addWidget(_label(
             "每行是一款游戏和它引用的规则；改下拉即时换规则，并只重新检查这一款。"
-            "右侧的「日志阈值」是这款游戏自己的 debug 日志体积上限，默认 "
-            f"{core.DEFAULT_LOG_THRESHOLD_MB}MB。",
+            "下方开关控制日志阈值检查是否启用；超过阈值的自动化程序日志会列入关注列表，"
+            "每行可以单独改自己的上限。",
             11, "text_muted", wrap=True))
+
+        # 日志阈值总开关 + 默认阈值：和下面每行的阈值放同一页（从设置页搬来）
+        opt = QWidget()
+        flat(opt)
+        ol = QHBoxLayout(opt)
+        ol.setContentsMargins(0, 4, 0, 0)
+        ol.setSpacing(10)
+        self.log_thr_toggle = ToggleSwitch(core.log_threshold_check_enabled(self.cfg))
+        self.log_thr_toggle.setToolTip(
+            "开启时超过阈值的自动化程序日志会列入关注列表；"
+            "关闭后不再按日志体积判定「存疑」，已有阈值设置保留")
+        self.log_thr_toggle.toggled.connect(self._save_check_opts)
+        ol.addWidget(self.log_thr_toggle)
+        ol.addWidget(_label("启用日志阈值检查", 11, "text"))
+        ol.addSpacing(16)
+        ol.addWidget(_label("默认日志阈值", 11, "text_muted"))
+        self.thr_spin = NumberStepper(
+            int((self.cfg.get("check") or {}).get(
+                "threshold_mb", core.DEFAULT_LOG_THRESHOLD_MB)),
+            1, 500, 1, " MB", 108)
+        self.thr_spin.valueChanged.connect(self._save_check_opts)
+        self.thr_spin.setToolTip("调成默认值后，各游戏行会回到「跟随默认」")
+        ol.addWidget(self.thr_spin)
+        ol.addStretch(1)
+        card.lay.addWidget(opt)
+
         body.addWidget(card)
 
         holder = QWidget()
@@ -673,9 +700,28 @@ class GameRulesView(QWidget):
 
         self.refresh(cfg)
 
+    def _sync_opts(self) -> None:
+        """外部改了配置（例如右键改默认阈值）后同步顶部控件，不要触发保存信号。"""
+        self.log_thr_toggle.blockSignals(True)
+        self.log_thr_toggle.setChecked(core.log_threshold_check_enabled(self.cfg))
+        self.log_thr_toggle.blockSignals(False)
+        self.thr_spin.blockSignals(True)
+        self.thr_spin.setValue(int((self.cfg.get("check") or {}).get(
+            "threshold_mb", core.DEFAULT_LOG_THRESHOLD_MB)))
+        self.thr_spin.blockSignals(False)
+        self.thr_spin.setEnabled(self.log_thr_toggle.isChecked())
+
+    def _save_check_opts(self, *_):
+        ck = self.cfg.setdefault("check", {})
+        ck["log_threshold_check"] = self.log_thr_toggle.isChecked()
+        ck["threshold_mb"] = int(self.thr_spin.value())
+        self.thr_spin.setEnabled(self.log_thr_toggle.isChecked())
+        self.config_changed.emit()
+
     def refresh(self, cfg: dict | None = None) -> None:
         if cfg is not None:
             self.cfg = cfg
+        self._sync_opts()
         rules = core.get_rules(self.cfg)
         games = core.all_games(self.cfg)
         _clear_layout(self.rows_lay)
@@ -710,9 +756,9 @@ class FolderMapView(QWidget):
         btn.setObjectName("ghost")
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFixedHeight(30)
-        btn.setToolTip("增删自定义映射；内置的 13 条只读，可被同名自定义覆盖")
+        btn.setToolTip("编辑 / 删除任意一条映射（含内置 13 条），也能一键恢复内置")
         btn.clicked.connect(self.folder_map_manage_requested.emit)
-        self.row = SettingRow("folder", "文件夹关键词映射", "", btn)
+        self.row = SettingRow("folder", "文件夹部分映射", "", btn)
         body.addWidget(self.row)
 
         # 日志文件夹判定：只在程序根目录下这几个文件夹里查关键字 / 目标文件
@@ -734,12 +780,13 @@ class FolderMapView(QWidget):
         lf_line.addWidget(self.lf_edit, 1)
         lfl.addLayout(lf_line)
         lfl.addWidget(_label(
-            "相对游戏程序根目录，只填文件夹名（逗号分隔）；每个文件夹只读顶层文件，"
-            "不递归子目录。规则库里单条规则也可以单独指定，留空则跟随这里。",
+            "相对每款游戏的「自动化程序目录」，只填文件夹名（逗号分隔）；"
+            "每个文件夹只读顶层文件，不递归子目录。规则库不再单独指定目录，统一跟随这里。",
             11, "text_muted", wrap=True))
         self.lf_row = SettingRow(
             "folder", "日志文件夹判定",
-            "启用后只在这些文件夹里找关键字 / 检查目标文件，不扫描程序的其它文件夹",
+            "启用后只在这些自动化程序日志文件夹里找关键字 / 检查目标文件，"
+            "不扫描程序的其它文件夹",
             None, lf_box)
         body.addWidget(self.lf_row)
 
@@ -790,26 +837,27 @@ class FolderMapView(QWidget):
     def refresh(self, cfg: dict | None = None) -> None:
         if cfg is not None:
             self.cfg = cfg
-        ck = self.cfg.get("check") or {}
         self.lf_toggle.blockSignals(True)
         self.lf_toggle.setChecked(core.log_folder_check_enabled(self.cfg))
         self.lf_toggle.blockSignals(False)
         self.lf_edit.setText("，".join(core.get_log_folders(self.cfg)))
         self.lf_edit.setEnabled(self.lf_toggle.isChecked())
-        custom = {str(k): str(v) for k, v in (ck.get("folder_map") or {}).items()}
-        builtin = {k: v for k, v in core.FOLDER_NAME_MAP.items() if k not in custom}
+        effective = core.get_folder_map(self.cfg)
+        builtin = {k: v for k, v in effective.items()
+                   if k in core.FOLDER_NAME_MAP and v == core.FOLDER_NAME_MAP[k]}
+        custom = {k: v for k, v in effective.items() if k not in builtin}
 
         self.row.set_desc(
-            f"My-maawork 程序文件夹名对应到游戏名，用于异常监控；"
-            f"内置 {len(core.FOLDER_NAME_MAP)} 条，自定义 {len(custom)} 条。")
+            f"程序文件夹名里只要「包含」关键词就算映射成功（不要求完全相等），用于异常监控；"
+            f"内置 {len(builtin)} 条、自定义 {len(custom)} 条，内置条目同样可以编辑或删除。")
 
-        self.builtin_title.setText(f"内置映射 · {len(builtin)} 条")
+        self.builtin_title.setText(f"内置映射 · {len(builtin)} 条（可编辑）")
         self._fill(self.builtin_grid, [f"{k} → {v}" for k, v in builtin.items()])
 
-        self.custom_title.setText(f"自定义映射 · {len(custom)} 条")
+        self.custom_title.setText(f"改动 / 新增的映射 · {len(custom)} 条")
         self._fill(self.custom_grid, [f"{k} → {v}" for k, v in sorted(custom.items())])
         self.custom_hint.setText(
-            "" if custom else "还没有自定义映射；点右上「管理…」添加，同名会覆盖内置。")
+            "" if custom else "还没有改动；点右上「管理…」可编辑关键词、游戏名，或删除内置条目。")
         self.custom_hint.setVisible(not custom)
 
 
@@ -1282,7 +1330,8 @@ class RuleDialog(ThemedDialog):
         r = dict(rule or {})
         self._id = r.get("id", "")
         self.body.addWidget(_label(
-            "规则只描述「怎么算完成」，日志目录由引用它的游戏自己决定；"
+            "规则只描述「怎么从自动化程序日志里判断日常完成」；"
+            "看哪些日志文件夹由「判定规则 · 日志文件夹判定」统一设置，"
             "同一条规则可以给多款游戏共用。", 11, "text_muted", wrap=True))
 
         self.name_edit = _edit("规则名，如「MAA 系 · 任务已全部完成！」", r.get("name", ""))
@@ -1313,14 +1362,11 @@ class RuleDialog(ThemedDialog):
 
         self.kw_edit = _edit("要比对的关键字，如：任务已全部完成！", r.get("keyword", ""))
         self.kw_box = self._field("关键字", self.kw_edit)
-        self.ft_edit = _edit("目标文件名，如 today_finish.flag（相对日志目录）",
+        self.ft_edit = _edit("目标文件名，如 today_finish.flag（相对自动化程序日志文件夹）",
                             r.get("file_target", ""))
         self.ft_box = self._field("文件名", self.ft_edit)
         self.ext_edit = _edit("留空 = 沿用每个游戏自己的扩展名", r.get("ext", ""))
         self._field("扩展名", self.ext_edit)
-        self.folders_edit = _edit("留空 = 跟随全局；只填根目录文件夹名，逗号分隔",
-                                  r.get("folders", ""))
-        self._field("日志目录", self.folders_edit)
         self.note_edit = _edit("备注（可空）：这条规则从哪来、要注意什么", r.get("note", ""))
         self._field("备注", self.note_edit)
 
@@ -1329,7 +1375,7 @@ class RuleDialog(ThemedDialog):
         self.warn = _label("", 10, "danger", wrap=True)
         self.body.addWidget(self.warn)
 
-        for e in (self.kw_edit, self.ft_edit, self.ext_edit, self.folders_edit):
+        for e in (self.kw_edit, self.ft_edit, self.ext_edit):
             e.textChanged.connect(self._sync)
         self._sync()
         self.add_footer(ok_text="保存规则")
@@ -1356,7 +1402,6 @@ class RuleDialog(ThemedDialog):
                 "keyword": self.kw_edit.text().strip(),
                 "file_target": self.ft_edit.text().strip(),
                 "ext": self.ext_edit.text().strip(),
-                "folders": self.folders_edit.text().strip(),
                 "note": self.note_edit.text().strip()}
 
     def _sync(self, *_):
@@ -1415,19 +1460,21 @@ class GameRuleDialog(ThemedDialog):
 
 
 class AddGameDialog(ThemedDialog):
-    """添加一款自定义游戏：日志目录 + 引用的规则。"""
+    """添加一款自定义游戏：自动化程序目录 + 引用的规则。"""
 
     def __init__(self, parent, rules: list, names: list):
         super().__init__(parent, "添加游戏", 580)
         self._names = set(names)
         self.body.addWidget(_label(
-            "游戏只需要告诉程序「日志在哪」；怎么判断完成，从规则库里选一条。",
+            "填这个游戏用的「自动化程序目录」（根目录即可）；程序会到它下面的 "
+            "logs / log / debug / .log 日志文件夹里找完成关键字。"
+            "检查的是自动化程序写出来的日志，不是游戏自己的日志。",
             11, "text_muted", wrap=True))
 
         self.name_edit = _edit("游戏名，如「鸣潮」")
         self._field("游戏名", self.name_edit)
 
-        self.folder_edit = _edit(r"日志目录，如 D:\Automate\XXX\logs")
+        self.folder_edit = _edit(r"自动化程序目录，如 D:\Automate\XXX")
         browse = QPushButton("浏览…")
         browse.setObjectName("soft")
         browse.setCursor(Qt.PointingHandCursor)
@@ -1439,7 +1486,7 @@ class AddGameDialog(ThemedDialog):
         fl.setSpacing(8)
         fl.addWidget(self.folder_edit, 1)
         fl.addWidget(browse)
-        self._field("日志目录", box)
+        self._field("扫描自动化程序目录", box)
 
         self.ext_edit = _edit("默认 .log；留空 = 不限制扩展名", ".log")
         self._field("扩展名", self.ext_edit)
@@ -1465,7 +1512,7 @@ class AddGameDialog(ThemedDialog):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
         lbl = _label(name, 11, "text")
-        lbl.setFixedWidth(64)
+        lbl.setFixedWidth(116)
         row.addWidget(lbl)
         row.addWidget(w, 1)
         self.body.addWidget(box)
@@ -1474,7 +1521,7 @@ class AddGameDialog(ThemedDialog):
     def _pick_folder(self) -> None:
         from PySide6.QtWidgets import QFileDialog
         start = self.folder_edit.text().strip() or "D:\\"
-        path = QFileDialog.getExistingDirectory(self, "选择日志目录", start)
+        path = QFileDialog.getExistingDirectory(self, "选择自动化程序目录", start)
         if path:
             self.folder_edit.setText(path.replace("/", "\\"))
 
@@ -1500,7 +1547,7 @@ class AddGameDialog(ThemedDialog):
             self.warn.setText(f"「{v['name']}」已经在清单里了，换个名字或直接改它的规则")
             return
         if not v["folder"]:
-            self.warn.setText("填一下日志目录（可以点浏览选）")
+            self.warn.setText("填一下自动化程序目录（可以点浏览选）")
             return
         self.warn.setText("")
         super().accept()
@@ -1536,13 +1583,14 @@ class _GameListDialog(ThemedDialog):
 
 
 class FolderMapDialog(_GameListDialog):
-    """编辑文件夹关键词 → 游戏名映射。"""
+    """编辑文件夹关键词 → 游戏名映射（内置条目也可改 / 删）。"""
 
     def __init__(self, parent, current: dict):
-        super().__init__(parent, "文件夹关键词映射", 560)
+        super().__init__(parent, "文件夹部分映射", 560)
         self.body.addWidget(_label(
-            "My-maawork 下的程序文件夹名对应到游戏显示名，用于异常监控与无错天数统计；"
-            "内置 13 条默认映射，此处可追加或覆盖。", 11, "text_muted", wrap=True))
+            "程序文件夹名里只要包含左侧关键词就算映射成功（不要求完全相等），"
+            "用于异常监控与无错天数统计。内置 13 条在这里同样可以直接改或删。",
+            11, "text_muted", wrap=True))
         self.rows_lay = QVBoxLayout()
         self.rows_lay.setContentsMargins(0, 0, 0, 0)
         self.rows_lay.setSpacing(6)
@@ -1561,13 +1609,31 @@ class FolderMapDialog(_GameListDialog):
         self.body.addWidget(scroll)
         for k, v in sorted(current.items()):
             self._add_row(k, v)
+        tools = QHBoxLayout()
+        tools.setContentsMargins(0, 8, 0, 0)
+        tools.setSpacing(8)
         add_btn = QPushButton("添加一条映射")
         add_btn.setObjectName("soft")
         add_btn.setCursor(Qt.PointingHandCursor)
         add_btn.setFixedHeight(32)
         add_btn.clicked.connect(lambda: self._add_row("", ""))
-        self.body.addWidget(add_btn)
+        tools.addWidget(add_btn)
+        reset_btn = QPushButton("恢复内置 13 条")
+        reset_btn.setObjectName("ghost")
+        reset_btn.setCursor(Qt.PointingHandCursor)
+        reset_btn.setFixedHeight(32)
+        reset_btn.setToolTip("丢掉所有自定义改动，把列表还原成内置默认映射")
+        reset_btn.clicked.connect(self._reset_builtin)
+        tools.addWidget(reset_btn)
+        tools.addStretch(1)
+        self.body.addLayout(tools)
         self.add_footer()
+
+    def _reset_builtin(self) -> None:
+        for entry in list(self._entries):
+            self._remove_row(entry)
+        for k, v in sorted(core.FOLDER_NAME_MAP.items()):
+            self._add_row(k, v)
 
     def _style_edit(self, e: QLineEdit, ph: str) -> None:
         p = THEME.p
@@ -1584,7 +1650,7 @@ class FolderMapDialog(_GameListDialog):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(7)
         e1 = QLineEdit(k)
-        self._style_edit(e1, "文件夹名，如 MFAAFGO")
+        self._style_edit(e1, "关键词，如 FGO")
         e2 = QLineEdit(v)
         self._style_edit(e2, "游戏名，如 FGO")
         del_btn = QPushButton("删除")
@@ -2238,25 +2304,12 @@ class SettingsPage(QWidget):
                   "关闭后跳过文件夹异常检测（日常失败仍会清零）",
                   self.err_toggle)
 
-        self.log_thr_toggle = ToggleSwitch(core.log_threshold_check_enabled(self.cfg))
-        self.log_thr_toggle.toggled.connect(self._save_check)
-        self._row(lay, "save", "启用日志阈值检查",
-                  "关闭后不再按日志体积判定「存疑」，已有阈值设置保留；"
-                  "开启时超过阈值的 My-maawork 程序会列入关注列表",
-                  self.log_thr_toggle)
-
+        # 「启用日志阈值检查」与「默认日志阈值」已搬到「判定规则 · 游戏 → 规则」页，
+        # 和每行自己的阈值放在一起；设置页不再重复。
         scan_btn = self._small_btn("管理…", self.scan_dir_manage_requested.emit)
         self.scan_row = self._row(lay, "folder", "扫描目录",
                                   self._scan_desc(), scan_btn)
         self.scan_row.setToolTip("可以加多个根目录（比如别的盘），也可以排除其中的子目录")
-
-        self.thr_spin = NumberStepper(
-            int(ck.get("threshold_mb", core.DEFAULT_LOG_THRESHOLD_MB)),
-            1, 500, 1, " MB", 108)
-        self.thr_spin.valueChanged.connect(self._save_check)
-        self._row(lay, "save", "默认日志阈值",
-                  "所有游戏默认用它；个别游戏在「判定规则」页自己那一行上单独改",
-                  self.thr_spin)
 
         excluded = core.get_excluded(self.cfg)
         excl_btn = self._small_btn("管理…", self.exclude_manage_requested.emit)
@@ -2264,7 +2317,6 @@ class SettingsPage(QWidget):
             lay, "delete", "排除的游戏",
             "、".join(excluded) if excluded else "暂无排除，全部游戏都参与检查",
             excl_btn)
-        self._sync_log_thr()
 
     def _scan_desc(self) -> str:
         dirs = core.get_scan_dirs(self.cfg)
@@ -2276,35 +2328,25 @@ class SettingsPage(QWidget):
         return f"共 {len(dirs)} 个目录：{names}{tail}"
 
     def refresh_check(self) -> None:
-        """右键改了阈值 / 排除后，刷新设置页显示。"""
-        ck = self.cfg.setdefault("check", {})
-        self.thr_spin.setValue(int(ck.get("threshold_mb", core.DEFAULT_LOG_THRESHOLD_MB)))
+        """右键改了排除名单等之后，刷新设置页显示。"""
         self.err_toggle.blockSignals(True)
         self.err_toggle.setChecked(core.error_check_enabled(self.cfg))
         self.err_toggle.blockSignals(False)
-        for tgl, val in ((self.streak_toggle, core.streak_check_enabled(self.cfg)),
-                         (self.log_thr_toggle, core.log_threshold_check_enabled(self.cfg))):
-            tgl.blockSignals(True)
-            tgl.setChecked(val)
-            tgl.blockSignals(False)
-        self._sync_log_thr()
+        self.streak_toggle.blockSignals(True)
+        self.streak_toggle.setChecked(core.streak_check_enabled(self.cfg))
+        self.streak_toggle.blockSignals(False)
         excluded = core.get_excluded(self.cfg)
         self.excl_row.set_desc("、".join(excluded) if excluded
                                else "暂无排除，全部游戏都参与检查")
         if hasattr(self, "scan_row"):
             self.scan_row.set_desc(self._scan_desc())
+        ck = self.cfg.get("check") or {}
         self.cache_edit.setText(ck.get("cache_dir") or r"D:\Automate\Cache")
-
-    def _sync_log_thr(self) -> None:
-        self.thr_spin.setEnabled(self.log_thr_toggle.isChecked())
 
     def _save_check(self, *_):
         ck = self.cfg.setdefault("check", {})
-        ck["threshold_mb"] = int(self.thr_spin.value())
         ck["error_check"] = self.err_toggle.isChecked()
         ck["streak_check"] = self.streak_toggle.isChecked()
-        ck["log_threshold_check"] = self.log_thr_toggle.isChecked()
-        self._sync_log_thr()
         self.config_changed.emit()
 
     def _save_cache(self, *_):

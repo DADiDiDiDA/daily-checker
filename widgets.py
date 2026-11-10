@@ -819,8 +819,8 @@ class ProgressLine(QWidget):
 class GameRow(QFrame):
     """游戏列表中的一行：日常状态 / 无错天数 / 日志体积 / 异常文件夹标签。"""
 
-    open_requested = Signal(str)        # 打开程序目录（日志所在程序的根目录）
-    log_requested = Signal(str)         # 打开日志文件夹
+    open_requested = Signal(str)        # 打开自动化程序根目录
+    log_requested = Signal(str)         # 打开自动化程序日志文件夹
     debug_requested = Signal(str)       # 打开 debug 目录
     threshold_requested = Signal(str)   # 设置日志阈值
     method_requested = Signal(str)      # 设置日常判断方式
@@ -893,7 +893,7 @@ class GameRow(QFrame):
         self.dir_btn.setObjectName("ghost")
         self.dir_btn.setFixedHeight(30)
         self.dir_btn.setCursor(Qt.PointingHandCursor)
-        self.dir_btn.setToolTip("打开日志所在程序的根目录")
+        self.dir_btn.setToolTip("打开自动化程序目录")
         self.dir_btn.clicked.connect(
             lambda: self.open_requested.emit(self.item.key))
 
@@ -923,7 +923,7 @@ class GameRow(QFrame):
         self.name_lbl.setText(it.name)
         tint(self.name_lbl, p.text)
         self.detail_lbl.setText(it.detail or it.folder)
-        tip = [it.detail or "尚未检查", f"日志目录：{it.folder}"]
+        tip = [it.detail or "尚未检查", f"自动化程序目录：{it.folder}"]
         if it.rule:
             tip.append(f"匹配规则：{it.rule}")
         self.detail_lbl.setToolTip("\n".join(tip))
@@ -1051,7 +1051,7 @@ class GameRow(QFrame):
     def contextMenuEvent(self, e):
         it = self.item
         m = ThemedMenu(self)
-        act_open = m.addAction("打开日志文件夹")
+        act_open = m.addAction("打开自动化程序日志文件夹")
         act_debug = None
         if it.is_maawork and not it.excluded:
             act_debug = m.addAction("打开 debug 目录")
@@ -1066,13 +1066,13 @@ class GameRow(QFrame):
         act_excl = m.addAction("取消排除（恢复检查）" if it.excluded
                                else "排除此游戏（不再检查）")
         m.addSeparator()
-        act_copy = m.addAction("复制日志路径")
+        act_copy = m.addAction("复制自动化程序目录")
 
         act = m.exec(e.globalPos())
         if act is None:
             return
         if act is act_open:
-            # 「打开日志文件夹」要开日志目录，不是程序根目录
+            # 「打开日志文件夹」开真正存日志的那一层，不是程序根目录
             self.log_requested.emit(it.key)
         elif act_debug is not None and act is act_debug:
             self.debug_requested.emit(it.key)
