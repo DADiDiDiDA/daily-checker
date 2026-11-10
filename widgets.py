@@ -6,10 +6,10 @@ from __future__ import annotations
 from PySide6.QtCore import (QEasingCurve, QEventLoop, QPoint, QPointF, QPropertyAnimation, QRectF,
                             QSize, Qt, QTimer, Property, Signal, QObject)
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath,
-                           QPen, QDrag)
+                           QPen, QDrag, QAction)
 from PySide6.QtCore import QMimeData
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+                               QLineEdit, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 import core
 
@@ -1688,3 +1688,68 @@ class TabButton(QPushButton):
 
 
 
+
+
+class SuffixMultiSelect(QWidget):
+    """规则里的「扫描文件后缀」多选控件：默认「全部（不过滤）」，可勾选 .log / .txt 等。
+
+    选中的后缀以逗号分隔的字符串返回（"" = 全部，即扫描所有文件）。"""
+
+    OPTIONS = ["log", "txt", "json", "csv", "out", "err", "old", "bak", "zip"]
+    changed = Signal()
+
+    def __init__(self, value: str = "", parent=None):
+        super().__init__(parent)
+        self._sel = set(core.parse_exts(value) or [])
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.btn = QPushButton(self._label_text())
+        self.btn.setObjectName("soft")
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.setMinimumHeight(30)
+        self.btn.clicked.connect(self._open)
+        lay.addWidget(self.btn, 1)
+
+    def _label_text(self) -> str:
+        if not self._sel:
+            return "全部（不过滤）"
+        return "、".join(sorted(self._sel))
+
+    def _open(self) -> None:
+        menu = QMenu(self)
+        act_all = QAction("全部（不过滤）", self)
+        act_all.setCheckable(True)
+        act_all.setChecked(not self._sel)
+        act_all.triggered.connect(lambda: self._set([]))
+        menu.addAction(act_all)
+        menu.addSeparator()
+        for opt in self.OPTIONS:
+            a = QAction(f".{opt}", self)
+            a.setCheckable(True)
+            a.setChecked(f".{opt}" in self._sel)
+            a.triggered.connect(lambda _=False, o="." + opt: self._toggle(o))
+            menu.addAction(a)
+        menu.exec(self.btn.mapToGlobal(self.btn.rect().bottomLeft()))
+
+    def _toggle(self, ext: str) -> None:
+        if ext in self._sel:
+            self._sel.discard(ext)
+        else:
+            self._sel.add(ext)
+        self._refresh()
+
+    def _set(self, vals) -> None:
+        self._sel = set(vals)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self.btn.setText(self._label_text())
+        self.changed.emit()
+
+    def value(self) -> str:
+        return "" if not self._sel else ",".join(sorted(self._sel))
+
+    def set_value(self, value: str) -> None:
+        self._sel = set(core.parse_exts(value) or [])
+        self.btn.setText(self._label_text())

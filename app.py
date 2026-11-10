@@ -472,6 +472,7 @@ class MainWindow(QWidget):
         mp.rules.duplicate_rule_requested.connect(self.duplicate_rule)
         mp.rules.delete_rule_requested.connect(self.delete_rule)
         mp.games.add_game_requested.connect(self.add_game)
+        mp.games.edit_requested.connect(self.edit_game)
         mp.games.game_rule_changed.connect(self.set_game_rule)
         mp.games.game_remove_requested.connect(self.remove_game)
         mp.games.game_threshold_changed.connect(self.set_game_threshold)
@@ -1187,6 +1188,31 @@ class MainWindow(QWidget):
         self._save_cfg()
         self._reload_games()
         self.toast.show_text(f"已移除「{name}」")
+
+    def edit_game(self, name: str) -> None:
+        """已有游戏行的「编辑」：改它的自动化程序目录 / 完成提示 / 引用规则。"""
+        g = core.game_config(name, self.cfg)
+        rid = core.rule_id_for(self.cfg, name)
+        editing = {
+            "name": name,
+            "folder": g.folder if g else "",
+            "ext": (g.extension or "") if g else "",
+            "success_message": (g.success_message or "") if g else "",
+            "rule_id": rid,
+        }
+        dlg = AddGameDialog(self, core.get_rules(self.cfg),
+                            [x.name for x in core.all_games(self.cfg)],
+                            editing=editing)
+        if not dlg.exec():
+            return
+        v = dlg.value()
+        if not core.add_game(self.cfg, v["name"], v["folder"], v["ext"],
+                             v["success_message"], v["rule_id"]):
+            self.toast.show_text("保存失败：游戏名或自动化程序目录为空", ok=False)
+            return
+        self._save_cfg()
+        self._reload_games()
+        self.toast.show_text(f"已更新「{v['name']}」并按所选规则检查了一次")
 
     def _sync_item_rule(self, it) -> None:
         """规则变了：把条目上的关键字 / 扩展名 / 规则说明同步过来。"""

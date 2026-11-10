@@ -3,6 +3,8 @@ build/
 dist/
 *.pyc
 *.spec
+# 打包产物（构建出的可执行文件，不要提交；旧版本备份由 *.bak 覆盖）
+DailyChecker.exe
 
 # 本地配置与运行记录（含钉钉 webhook / 密钥，绝对不要提交）
 config/

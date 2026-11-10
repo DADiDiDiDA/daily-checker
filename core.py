@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -24,7 +25,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 # ==================== 监控配置（与原脚本一致） ====================
 
@@ -41,6 +42,15 @@ TARGET_DESC_MAP: Dict[str, str] = {
 # 程序文件夹「部分映射」：文件夹名里只要包含左侧关键词就算命中（不要求完全相等）。
 # 关键词里不再保留各自动化程序共有的 MFAA 前缀，短词同样能命中 MFAAxxx 这种真实目录名。
 FOLDER_NAME_MAP: Dict[str, str] = {
+    # —— 非 MFAA 的自动化程序（直接放在 D:\Automate 下）——
+    "BetterGI": "原神",
+    "March7thAssistant": "星铁",
+    "ZZZ-onedragon": "绝区零",
+    "Maa_bbb": "崩坏三",
+    "M9A": "1999",
+    "MAA": "明日方舟",
+    "MaaEnd": "终末地",
+    # —— MFAA 系（放在 My-maawork 下，关键词去除了 MFAA 前缀）——
     "Watcher-of-Realms": "潮汐守望者",
     "E7": "第七史诗",
     "Resonance": "雷索纳斯",
@@ -382,6 +392,25 @@ def rule_ext(rule: dict, game: Optional[GameConfig]) -> Optional[str]:
     return ext or (game.extension if game else None)
 
 
+def parse_exts(ext: Optional[str]) -> Optional[List[str]]:
+    """把规则里的「扩展名」字段（逗号 / 空格 / 分号分隔，可带点）解析成小写后缀列表。
+
+    空字符串 / None 表示「不过滤，扫描所有文件」。例如 ".log, .txt" → [".log", ".txt"]。
+    短后缀会自动补点（"log" → ".log"）。"""
+    if not ext or not str(ext).strip():
+        return None
+    out: List[str] = []
+    for part in re.split(r"[,\s;]+", str(ext).strip()):
+        part = part.strip().lower()
+        if not part:
+            continue
+        if not part.startswith("."):
+            part = "." + part
+        if part not in out:
+            out.append(part)
+    return out or None
+
+
 def rule_keyword(rule: dict, game: Optional[GameConfig] = None) -> str:
     kw = str((rule or {}).get("keyword") or "").strip()
     return kw or (game.target if game else "")
@@ -393,7 +422,8 @@ def describe_rule(keyword: str, folder: str, ext: Optional[str],
     """把判断方式翻译成一句可核对的具体规则：看哪些文件、比什么、以什么为准。
 
     with_folder=False 时用「自动化程序日志」代替完整路径（界面里一行放得下）。"""
-    ext_txt = f" *{ext} " if ext else "文件"      # 带扩展名时是 " *.log "，否则直接「文件」
+    exts = parse_exts(ext)
+    ext_txt = (" " + "、".join(f"*{e}" for e in exts) + " ") if exts else "文件"
     if with_folder:
         where, lead = f"{folder} 下", "读 "
     else:
@@ -437,7 +467,8 @@ def rule_name_of(cfg: dict, game_name: str) -> str:
 def describe_failure(keyword: str, ext: Optional[str], methods: List[str],
                      file_target: str, scanned: int, folder_exists: bool) -> str:
     """未完成时的一句话原因：比了什么关键字、读了几个什么文件。"""
-    ext_txt = ext or "文件"
+    exts = parse_exts(ext)
+    ext_txt = "、".join(f"*{e}" for e in exts) if exts else "文件"
     kw = keyword if any(m in ("keyword", "keyword_today") for m in methods) else ""
     ft = file_target if any(m in FILE_METHODS for m in methods) else ""
     parts = []
@@ -1240,8 +1271,10 @@ class Engine:
             return []
         names = [f for f in os.listdir(folder)
                  if os.path.isfile(os.path.join(folder, f)) and not f.startswith(".")]
-        if ext:
-            names = [f for f in names if f.lower().endswith(ext.lower())]
+        exts = parse_exts(ext)
+        if exts:
+            names = [f for f in names
+                     if any(f.lower().endswith(e) for e in exts)]
         if today_only:
             today = time.localtime().tm_yday
             keep = []

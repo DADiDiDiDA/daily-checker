@@ -18,7 +18,8 @@ from theme import (GLYPH, PRESET_HINTS, PRESET_LABELS, PRESET_ORDER, THEME, flat
                    qc, rgba, scoped, tint)
 from widgets import (Card, Chip, GameRow, Glyph, NumberStepper,
                      ProgressLine, SearchBox, SegmentedControl, SettingGroup, SettingRow,
-                     StatTile, TabButton, ThemedCombo, ToggleSwitch, WrapLabel)
+                     StatTile, SuffixMultiSelect, TabButton, ThemedCombo, ToggleSwitch,
+                     WrapLabel)
 
 import autostart
 import core
@@ -445,6 +446,7 @@ class GameRuleRow(QWidget):
 
     rule_changed = Signal(str, str)
     remove_requested = Signal(str)
+    edit_requested = Signal(str)
     threshold_changed = Signal(str, int)
 
     NAME_W = 112
@@ -487,6 +489,13 @@ class GameRuleRow(QWidget):
         l1.addWidget(self.thr)
 
         self.custom = not any(g.name == game.name for g in core.DAILY_GAMES)
+        edit_btn = QPushButton("编辑")
+        edit_btn.setObjectName("ghost")
+        edit_btn.setCursor(Qt.PointingHandCursor)
+        edit_btn.setFixedHeight(28)
+        edit_btn.setToolTip("修改这款游戏的自动化程序目录 / 完成提示 / 引用规则")
+        edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.game.name))
+        l1.addWidget(edit_btn)
         if self.custom:
             b = QPushButton("移除")
             b.setObjectName("ghost")
@@ -580,6 +589,7 @@ class RulesView(QWidget):
         outer.addWidget(scroll)
 
         card = Card(padding=16)
+        card.lay.setContentsMargins(16, 4, 16, 16)   # 顶部留白收窄，让「规则库」标题上移
         head = QHBoxLayout()
         head.setSpacing(8)
         self.title = _label("规则库", 15, "text", bold=True)
@@ -670,6 +680,7 @@ class GameRulesView(QWidget):
         ol = QHBoxLayout(opt)
         ol.setContentsMargins(0, 4, 0, 0)
         ol.setSpacing(10)
+        ol.addStretch(1)
         self.log_thr_toggle = ToggleSwitch(core.log_threshold_check_enabled(self.cfg))
         self.log_thr_toggle.setToolTip(
             "开启时超过阈值的自动化程序日志会列入关注列表；"
@@ -686,7 +697,6 @@ class GameRulesView(QWidget):
         self.thr_spin.valueChanged.connect(self._save_check_opts)
         self.thr_spin.setToolTip("调成默认值后，各游戏行会回到「跟随默认」")
         ol.addWidget(self.thr_spin)
-        ol.addStretch(1)
         card.lay.addWidget(opt)
 
         body.addWidget(card)
@@ -790,33 +800,20 @@ class FolderMapView(QWidget):
             None, lf_box)
         body.addWidget(self.lf_row)
 
-        self.builtin_title = _label("", 13, "text", bold=True)
-        body.addWidget(self.builtin_title)
-        builtin_box = QWidget()
-        flat(builtin_box)
-        self.builtin_grid = QGridLayout(builtin_box)
-        self.builtin_grid.setContentsMargins(2, 0, 2, 0)
-        self.builtin_grid.setHorizontalSpacing(8)
-        self.builtin_grid.setVerticalSpacing(8)
-        body.addWidget(builtin_box)
-
-        self.custom_title = _label("", 13, "text", bold=True)
-        body.addWidget(self.custom_title)
-        custom_box = QWidget()
-        flat(custom_box)
-        self.custom_grid = QGridLayout(custom_box)
-        self.custom_grid.setContentsMargins(2, 0, 2, 0)
-        self.custom_grid.setHorizontalSpacing(8)
-        self.custom_grid.setVerticalSpacing(8)
-        body.addWidget(custom_box)
-        self.custom_hint = _label("", 11, "text_muted", wrap=True)
-        body.addWidget(self.custom_hint)
+        self.map_title = _label("", 13, "text", bold=True)
+        body.addWidget(self.map_title)
+        map_box = QWidget()
+        flat(map_box)
+        self.map_grid = QGridLayout(map_box)
+        self.map_grid.setContentsMargins(2, 0, 2, 0)
+        self.map_grid.setHorizontalSpacing(8)
+        self.map_grid.setVerticalSpacing(8)
+        body.addWidget(map_box)
         body.addStretch(1)
 
         self.refresh(cfg)
 
-    @staticmethod
-    def _fill(grid: QGridLayout, items: list) -> None:
+    def _fill(self, grid: QGridLayout, items: list) -> None:
         while grid.count():
             item = grid.takeAt(0)
             w = item.widget()
@@ -824,7 +821,17 @@ class FolderMapView(QWidget):
                 w.hide()
                 w.deleteLater()
         for i, text in enumerate(items):
-            grid.addWidget(_pill(text), i // 2, i % 2, Qt.AlignLeft)
+            b = QPushButton(text)
+            b.setObjectName("soft")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setMinimumHeight(28)
+            b.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+            b.setStyleSheet(
+                f"QPushButton{{text-align:left;padding:4px 10px;border-radius:8px;"
+                f"background:{rgba(THEME.p.text, 0.055)};color:{THEME.p.text};font-size:11px;}}"
+                f"QPushButton:hover{{background:{rgba(THEME.p.text, 0.1)};}}")
+            b.clicked.connect(lambda _=False: self.folder_map_manage_requested.emit())
+            grid.addWidget(b, i // 2, i % 2, Qt.AlignLeft)
 
     def _save_log_folders(self, *_):
         ck = self.cfg.setdefault("check", {})
@@ -843,22 +850,13 @@ class FolderMapView(QWidget):
         self.lf_edit.setText("，".join(core.get_log_folders(self.cfg)))
         self.lf_edit.setEnabled(self.lf_toggle.isChecked())
         effective = core.get_folder_map(self.cfg)
-        builtin = {k: v for k, v in effective.items()
-                   if k in core.FOLDER_NAME_MAP and v == core.FOLDER_NAME_MAP[k]}
-        custom = {k: v for k, v in effective.items() if k not in builtin}
 
         self.row.set_desc(
-            f"程序文件夹名里只要「包含」关键词就算映射成功（不要求完全相等），用于异常监控；"
-            f"内置 {len(builtin)} 条、自定义 {len(custom)} 条，内置条目同样可以编辑或删除。")
+            f"程序文件夹名里只要「包含」关键词就算映射成功（不要求完全相等）；"
+            f"共 {len(effective)} 条，点任意一条即可修改关键词 / 游戏名或删除（含内置）。")
 
-        self.builtin_title.setText(f"内置映射 · {len(builtin)} 条（可编辑）")
-        self._fill(self.builtin_grid, [f"{k} → {v}" for k, v in builtin.items()])
-
-        self.custom_title.setText(f"改动 / 新增的映射 · {len(custom)} 条")
-        self._fill(self.custom_grid, [f"{k} → {v}" for k, v in sorted(custom.items())])
-        self.custom_hint.setText(
-            "" if custom else "还没有改动；点右上「管理…」可编辑关键词、游戏名，或删除内置条目。")
-        self.custom_hint.setVisible(not custom)
+        self.map_title.setText(f"映射 · {len(effective)} 条（点击可修改）")
+        self._fill(self.map_grid, [f"{k} → {v}" for k, v in effective.items()])
 
 
 class MethodsPages:
@@ -1365,8 +1363,9 @@ class RuleDialog(ThemedDialog):
         self.ft_edit = _edit("目标文件名，如 today_finish.flag（相对自动化程序日志文件夹）",
                             r.get("file_target", ""))
         self.ft_box = self._field("文件名", self.ft_edit)
-        self.ext_edit = _edit("留空 = 沿用每个游戏自己的扩展名", r.get("ext", ""))
-        self._field("扩展名", self.ext_edit)
+        self.ext_sel = SuffixMultiSelect(r.get("ext", ""))
+        self.ext_sel.changed.connect(self._sync)
+        self._field("扫描文件后缀", self.ext_sel)
         self.note_edit = _edit("备注（可空）：这条规则从哪来、要注意什么", r.get("note", ""))
         self._field("备注", self.note_edit)
 
@@ -1375,7 +1374,7 @@ class RuleDialog(ThemedDialog):
         self.warn = _label("", 10, "danger", wrap=True)
         self.body.addWidget(self.warn)
 
-        for e in (self.kw_edit, self.ft_edit, self.ext_edit):
+        for e in (self.kw_edit, self.ft_edit):
             e.textChanged.connect(self._sync)
         self._sync()
         self.add_footer(ok_text="保存规则")
@@ -1386,7 +1385,7 @@ class RuleDialog(ThemedDialog):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
         lbl = _label(name, 11, "text")
-        lbl.setFixedWidth(52)
+        lbl.setFixedWidth(92)
         row.addWidget(lbl)
         row.addWidget(w, 1)
         self.body.addWidget(box)
@@ -1401,7 +1400,7 @@ class RuleDialog(ThemedDialog):
                 "methods": self.methods(),
                 "keyword": self.kw_edit.text().strip(),
                 "file_target": self.ft_edit.text().strip(),
-                "ext": self.ext_edit.text().strip(),
+                "ext": self.ext_sel.value(),
                 "note": self.note_edit.text().strip()}
 
     def _sync(self, *_):
@@ -1462,19 +1461,22 @@ class GameRuleDialog(ThemedDialog):
 class AddGameDialog(ThemedDialog):
     """添加一款自定义游戏：自动化程序目录 + 引用的规则。"""
 
-    def __init__(self, parent, rules: list, names: list):
-        super().__init__(parent, "添加游戏", 580)
+    def __init__(self, parent, rules: list, names: list, editing: dict | None = None):
+        editing = dict(editing or {})
+        super().__init__(parent, "编辑游戏" if editing else "添加游戏", 580)
         self._names = set(names)
+        self._editing_name = editing.get("name", "")
         self.body.addWidget(_label(
             "填这个游戏用的「自动化程序目录」（根目录即可）；程序会到它下面的 "
             "logs / log / debug / .log 日志文件夹里找完成关键字。"
             "检查的是自动化程序写出来的日志，不是游戏自己的日志。",
             11, "text_muted", wrap=True))
 
-        self.name_edit = _edit("游戏名，如「鸣潮」")
+        self.name_edit = _edit("游戏名，如「鸣潮」", editing.get("name", ""))
         self._field("游戏名", self.name_edit)
 
-        self.folder_edit = _edit(r"自动化程序目录，如 D:\Automate\XXX")
+        self.folder_edit = _edit(r"自动化程序目录，如 D:\Automate\XXX",
+                                editing.get("folder", ""))
         browse = QPushButton("浏览…")
         browse.setObjectName("soft")
         browse.setCursor(Qt.PointingHandCursor)
@@ -1488,15 +1490,18 @@ class AddGameDialog(ThemedDialog):
         fl.addWidget(browse)
         self._field("扫描自动化程序目录", box)
 
-        self.ext_edit = _edit("默认 .log；留空 = 不限制扩展名", ".log")
+        self.ext_edit = _edit("默认 .log；留空 = 不限制扩展名",
+                              editing.get("ext", ".log"))
         self._field("扩展名", self.ext_edit)
-        self.msg_edit = _edit("完成提示语，留空 = 「<游戏名>日常已完成！」")
+        self.msg_edit = _edit("完成提示语，留空 = 「<游戏名>日常已完成！」",
+                              editing.get("success_message", ""))
         self._field("完成提示", self.msg_edit)
 
         self._rules = {r["id"]: r for r in rules}
         items = [(r["id"], r["name"]) for r in rules]
         items.append(("", "暂不绑定（沿用默认判断方式）"))
-        self.rule_combo = ThemedCombo(items, rules[0]["id"] if rules else "", 420)
+        self.rule_combo = ThemedCombo(items, editing.get("rule_id",
+                                                         rules[0]["id"] if rules else ""), 420)
         self.rule_combo.changed.connect(self._sync)
         self._field("引用规则", self.rule_combo)
         self.preview = _label("", 10, "text_muted", wrap=True)
@@ -1504,7 +1509,7 @@ class AddGameDialog(ThemedDialog):
         self.warn = _label("", 10, "danger", wrap=True)
         self.body.addWidget(self.warn)
         self._sync(self.rule_combo.value())
-        self.add_footer(ok_text="添加")
+        self.add_footer(ok_text="保存")
 
     def _field(self, name: str, w: QWidget) -> QWidget:
         box = QWidget()
@@ -1543,7 +1548,7 @@ class AddGameDialog(ThemedDialog):
         if not v["name"]:
             self.warn.setText("填一下游戏名")
             return
-        if v["name"] in self._names:
+        if v["name"] in self._names and v["name"] != self._editing_name:
             self.warn.setText(f"「{v['name']}」已经在清单里了，换个名字或直接改它的规则")
             return
         if not v["folder"]:
