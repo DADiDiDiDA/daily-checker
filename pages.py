@@ -1104,17 +1104,20 @@ class DashboardView(QWidget):
         return bool(i.suspicious and core.log_threshold_check_enabled(self._cfg))
 
     def refresh_stats(self) -> None:
-        items = self._items
-        err = sum(1 for i in items if i.has_error)
-        failed = sum(1 for i in items
+        # 已排除 / 强制已完成的不参与首页统计：卡片、标题、关注列表同一口径，
+        # 否则会出现「顶部 N 个需要关注，下面却暂无需要关注的游戏」。
+        visible = [i for i in self._items
+                   if core.home_attention_visible(self._cfg, i)]
+        err = sum(1 for i in visible if i.has_error)
+        failed = sum(1 for i in visible
                      if core.effective_failed(self._cfg, i))
-        susp = sum(1 for i in items if self._suspect_of(i) and not i.excluded)
+        susp = sum(1 for i in visible if self._suspect_of(i))
         self.tile_error.set_values(str(err))
         self.tile_failed.set_values(str(failed))
         self.tile_susp.set_values(str(susp))
         self.tile_time.set_values(self.last_check_time or "—")
         if not self._running:
-            if not items:
+            if not self._items:
                 self.title.setText("尚未检查")
                 self.subtitle.setText("点击「开始检查」扫描游戏日常")
             elif err or failed or susp:
@@ -1122,7 +1125,7 @@ class DashboardView(QWidget):
                 self.subtitle.setText("异常、未完成与存疑的日常会推送到钉钉")
             else:
                 self.title.setText("一切正常")
-                self.subtitle.setText(f"共检查 {len(items)} 个游戏，全部完成")
+                self.subtitle.setText(f"共检查 {len(self._items)} 个游戏，全部完成")
         self._rebuild_summary()
 
     def _rebuild_summary(self) -> None:
@@ -1140,7 +1143,7 @@ class DashboardView(QWidget):
                 w.hide()               # 先隐藏再销毁；保持父子关系，避免变成顶层小窗
                 w.deleteLater()
         attn = [i for i in self._items
-                if not i.excluded and core.manual_state_of(self._cfg, i) != "forced"
+                if core.home_attention_visible(self._cfg, i)
                 and (i.has_error
                      or core.effective_failed(self._cfg, i)
                      or self._suspect_of(i))]

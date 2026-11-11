@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.6"
+APP_VERSION = "1.7.7"
 
 # ==================== 监控配置 ====================
 
@@ -1371,6 +1371,17 @@ def clear_manual_states(cfg: dict) -> None:
     """清空全部手动状态（保留兼容；正常流程改用 expire_marks 按日期清理）。"""
     ck = cfg.setdefault("check", {})
     ck.pop("manual_states", None)
+
+
+def home_attention_visible(cfg: dict, i) -> bool:
+    """游戏是否参与首页「需要关注」体系（统计卡片 / 标题 / 关注列表 / 托盘角标）。
+
+    已排除、或首页右键标了「强制已完成」的游戏完全不参与：它的异常、未完成、
+    存疑都不再显示，也不计入「N 个游戏需要关注」。手动「已完成」(done) 不在此列——
+    它只是不再算未完成，异常徽章仍会提醒。记号次日 0 点失效后自动回来。"""
+    if i.excluded:
+        return False
+    return manual_state_of(cfg, i) != "forced"
 
 
 def effective_failed(cfg: dict, i) -> bool:

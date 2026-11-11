@@ -820,15 +820,22 @@ class MainWindow(QWidget):
 
     # ---------- 数据与检查 ----------
     def _attention_count(self) -> int:
-        # 关注数应含存疑，否则只有存疑时托盘仍显示「一切正常」
-        return sum(1 for i in self.games if not i.excluded
-                   and (i.has_error or (i.scanned and i.daily == "failed") or i.suspicious))
+        # 和首页同一口径：已排除 / 强制已完成的不计入；
+        # 关注数含存疑，否则只有存疑时托盘仍显示「一切正常」
+        susp_on = core.log_threshold_check_enabled(self.cfg)
+        return sum(1 for i in self.games
+                   if core.home_attention_visible(self.cfg, i)
+                   and (i.has_error
+                        or core.effective_failed(self.cfg, i)
+                        or (i.suspicious and susp_on)))
 
     def _update_brand(self) -> None:
         import html as _html
-        n_err = sum(1 for i in self.games if i.has_error)
+        n_err = sum(1 for i in self.games
+                    if core.home_attention_visible(self.cfg, i) and i.has_error)
         n_fail = sum(1 for i in self.games
-                     if i.scanned and i.daily == "failed" and not i.excluded)
+                     if core.home_attention_visible(self.cfg, i)
+                     and core.effective_failed(self.cfg, i))
         dirs = core.get_scan_dirs(self.cfg)
         if dirs:
             first = os.path.basename(os.path.normpath(dirs[0])) or dirs[0]
@@ -1455,6 +1462,10 @@ class MainWindow(QWidget):
         core.set_manual_state(self.cfg, name, state or None)
         self._save_cfg()
         self.page_home.refresh_stats()
+        # 标记变了，托盘角标与侧栏数字也要立刻跟着（不必等下一轮检查）
+        if self.tray is not None:
+            self.tray.set_tooltip(None, self._attention_count())
+        self._update_brand()
         msg = {"done": f"「{name}」已设为已完成（次日 0 点自动失效）",
                "failed": f"「{name}」已设为未完成（次日 0 点自动失效）",
                "forced": f"「{name}」已强制完成，从关注列表排除（次日 0 点自动失效）"}.get(state)
