@@ -20,3 +20,7 @@ diag_*.png
 exe_*.png
 chk_*.png
 *.bak
+
+# 检测数据目录默认在程序根目录，源码运行时生成的状态/日报不入库
+/DailyCheck.txt
+/error_detect_state.json
