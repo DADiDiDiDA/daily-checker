@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.5"
+APP_VERSION = "1.7.6"
 
 # ==================== 监控配置 ====================
 
@@ -342,14 +342,16 @@ def _legacy_rule_id(cfg: dict, game_name: str) -> str:
 def rule_id_for(cfg: dict, game_name: str) -> str:
     """该游戏引用的规则 id；空字符串表示「没绑定，沿用默认判断方式」。
 
-    优先级：界面里显式绑定 > 默认规则（规则库里标的） >
-    旧版单游戏方式（能对上规则就认） > 内置默认规则。"""
+    优先级：界面里显式绑定（选默认规则也算） > 默认规则（规则库里标的，
+    所有没显式绑定的游戏都用它） > 旧版单游戏方式（能对上规则就认） > 内置默认规则。
+    显式绑过但规则被删掉的悬空 id，认作「未设定」跟默认规则走。"""
     ck = cfg.get("check") or {}
     stored = ck.get("rule_map") or {}
     if game_name in stored:
         rid = str(stored.get(game_name) or "")
-        # 规则被删掉后这里会留下悬空 id，认作「未绑定」更安全
-        return rid if (not rid or get_rule(cfg, rid)) else ""
+        if rid and get_rule(cfg, rid):
+            return rid
+        # 显式未绑定 / 悬空 id → 不在这里返回，跟默认规则走
     dr = get_default_rule(cfg)
     if dr:
         return dr
@@ -385,8 +387,9 @@ def set_default_rule(cfg: dict, rid: str) -> None:
 
 
 def is_game_bound(cfg: dict, game_name: str) -> bool:
-    """游戏在程序检查规则页是否显式设置过规则（区别于回落到默认规则）。"""
-    return game_name in ((cfg.get("check") or {}).get("rule_map") or {})
+    """游戏是否显式设置过规则（下拉里选过一条，选默认规则也算；区别于「未设定」）。"""
+    rid = str(((cfg.get("check") or {}).get("rule_map") or {}).get(game_name) or "")
+    return bool(rid) and bool(get_rule(cfg, rid))
 
 
 def rule_of(cfg: dict, game_name: str) -> dict:
@@ -742,11 +745,20 @@ def rule_text_bare(rule: dict) -> str:
 
 
 def set_game_rule(cfg: dict, game_name: str, rule_id: str) -> None:
-    """把游戏绑定到某条规则；rule_id 为空表示解绑（沿用默认判断方式）。"""
+    """把游戏显式绑定到某条规则（选默认规则也算，绑定后不再置顶）；
+
+    rule_id 为空表示回到「未设定」：从 rule_map 里删掉，跟随默认规则。"""
     ck = cfg.setdefault("check", {})
     rm = dict(ck.get("rule_map") or {})
-    rm[game_name] = str(rule_id or "")
-    ck["rule_map"] = rm
+    rid = str(rule_id or "")
+    if rid:
+        rm[game_name] = rid
+    else:
+        rm.pop(game_name, None)     # 未设定：不留在 rule_map 里，程序检查规则页置顶
+    if rm:
+        ck["rule_map"] = rm
+    else:
+        ck.pop("rule_map", None)
     # 显式绑定后，旧版的单游戏方式覆盖就不再参与了
     (ck.get("methods") or {}).pop(game_name, None)
     (ck.get("file_targets") or {}).pop(game_name, None)
@@ -949,8 +961,12 @@ def get_manual_order(cfg: dict) -> List[str]:
     return [str(x) for x in raw]
 
 
-def sort_items(items: list, mode: str, manual_order: List[str] = None) -> list:
-    """按排序方式返回新列表；未扫描的条目在数值排序里排在未扫扇区后面。"""
+def sort_items(items: list, mode: str, manual_order: List[str] = None,
+               cfg: dict = None) -> list:
+    """按排序方式返回新列表；未扫描的条目在数值排序里排在未扫扇区后面。
+
+    传入 cfg 时「未完成 / 异常优先」会尊重首页的手动状态：
+    手动标已完成 / 强制完成的游戏不前置（异常徽章仍显示，但不排到最前）。"""
     items = list(items)
     if mode == "name":
         return sorted(items, key=lambda i: i.name)
@@ -959,21 +975,33 @@ def sort_items(items: list, mode: str, manual_order: List[str] = None) -> list:
     if mode == "logsize":
         return sorted(items, key=lambda i: (-int(i.log_size or 0), i.name))
     if mode == "failed_first":
-        # 未完成优先；未完成里带异常（onerror 等）的再排最前
+        # 未完成优先；未完成里带异常（onerror 等）的再排最前；
+        # 手动标已完成 / 强制完成的不前置（也不按异常提前）
+        def _failed(i):
+            if cfg is not None:
+                return effective_failed(cfg, i)
+            return i.scanned and i.daily == "failed" and not i.excluded
+
         def _tier(i):
-            failed = i.scanned and i.daily == "failed" and not i.excluded
-            if failed and i.has_error:
+            if cfg is not None and manual_state_of(cfg, i) in ("done", "forced"):
+                return 3
+            f = _failed(i)
+            if f and i.has_error:
                 return 0
-            if failed:
+            if f:
                 return 1
             if i.has_error:
                 return 2
             return 3
         return sorted(items, key=lambda i: (_tier(i), i.name))
     if mode == "error_first":
+        def _failed_ef(i):
+            if cfg is not None:
+                return effective_failed(cfg, i)
+            return i.scanned and i.daily == "failed" and not i.excluded
         return sorted(items, key=lambda i: (
             0 if i.has_error else 1,
-            0 if (i.scanned and i.daily == "failed" and not i.excluded) else 1, i.name))
+            0 if _failed_ef(i) else 1, i.name))
     if mode == "manual" and manual_order:
         pos = {n: idx for idx, n in enumerate(manual_order)}
         return sorted(items, key=lambda i: (pos.get(i.name, 10_000), i.name))
@@ -1366,7 +1394,7 @@ def sort_summary_items(items: list, cfg: dict, mode: str = "") -> list:
     """关注列表排序。默认「未完成优先」：未完成 → 异常 → 其它 → 已修复（倒数第二）→ 存疑（最后）。"""
     mode = mode or get_summary_sort(cfg)
     if mode == "default":
-        return sort_items(items, "failed_first")
+        return sort_items(items, "failed_first", cfg=cfg)
     if mode == "name":
         return sorted(items, key=lambda i: i.name)
 

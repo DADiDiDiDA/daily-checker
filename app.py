@@ -1141,9 +1141,9 @@ class MainWindow(QWidget):
         if now:
             rname = next((r["name"] for r in core.get_rules(self.cfg)
                           if r["id"] == now), now)
-            self.toast.show_text(f"已把「{rname}」设为默认规则，未绑定规则的游戏都改用它")
+            self.toast.show_text(f"已把「{rname}」设为默认规则，未设定规则的游戏都改用它")
         elif was:
-            self.toast.show_text("已取消默认规则，未绑定的游戏回到原来的判断方式")
+            self.toast.show_text("已取消默认规则，未设定的游戏回到原来的判断方式")
 
     # ---------- 判定规则库 ----------
     def edit_method(self, key: str) -> None:
@@ -1152,7 +1152,8 @@ class MainWindow(QWidget):
         if not it:
             return
         dlg = GameRuleDialog(self, it.name, core.get_rules(self.cfg),
-                             core.rule_id_for(self.cfg, it.name))
+                             core.rule_id_for(self.cfg, it.name)
+                             if core.is_game_bound(self.cfg, it.name) else "")
         if dlg.exec():
             self.set_game_rule(it.name, dlg.value())
 
@@ -1243,7 +1244,8 @@ class MainWindow(QWidget):
     def edit_game(self, name: str) -> None:
         """已有游戏行的「编辑」：改它的自动化程序目录 / 完成提示 / 引用规则。"""
         g = core.game_config(name, self.cfg)
-        rid = core.rule_id_for(self.cfg, name)
+        rid = (core.rule_id_for(self.cfg, name)
+               if core.is_game_bound(self.cfg, name) else "")
         editing = {
             "name": name,
             "folder": g.folder if g else "",
@@ -1261,6 +1263,9 @@ class MainWindow(QWidget):
                              v["success_message"], v["rule_id"]):
             self.toast.show_text("保存失败：游戏名或自动化程序目录为空", ok=False)
             return
+        if not v["rule_id"]:
+            # 编辑时选「暂不绑定」= 清掉旧绑定，回到未设定（跟随默认规则）
+            core.set_game_rule(self.cfg, v["name"], "")
         self._save_cfg()
         self._reload_games()
         self.toast.show_text(f"已更新「{v['name']}」并按所选规则检查了一次")

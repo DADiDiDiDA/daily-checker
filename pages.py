@@ -125,14 +125,14 @@ class GameListView(QWidget):
             self.chips[key] = chip
             bar.addWidget(chip)
         bar.addStretch(1)
-        _cfg = core.load_config()
+        self.cfg = core.load_config()
         self.sort_combo = ThemedCombo([(k, t) for k, t in core.SORT_MODES_BASIC],
-                                      core.get_sort_mode(_cfg), 116)
+                                      core.get_sort_mode(self.cfg), 116)
         self.sort_combo.changed.connect(self._on_sort_changed)
         self.sort_combo.setToolTip("常规排序：默认顺序 / 按名称 / 无错天数 / 日志大小")
         bar.addWidget(self.sort_combo)
         self.special_combo = ThemedCombo([(k, t) for k, t in core.SORT_MODES_SPECIAL],
-                                         core.get_sort_special(_cfg), 108)
+                                         core.get_sort_special(self.cfg), 108)
         self.special_combo.changed.connect(self._on_sort_changed)
         self.special_combo.setToolTip(
             "特殊排序：启用时覆盖常规排序；「手动拖拽」下可按住行拖动调整顺序")
@@ -166,8 +166,10 @@ class GameListView(QWidget):
     # ---------- 数据 ----------
     def set_items(self, items) -> None:
         self.items = list(items)
+        self.cfg = core.load_config()   # 手动状态 / 排序设置可能刚变过，重读一次
         self._sorted_items = core.sort_items(self.items, self._effective_mode(),
-                                             core.get_manual_order(core.load_config()))
+                                             core.get_manual_order(self.cfg),
+                                             cfg=self.cfg)
         self._apply_manual_drag()
         for row in self.rows.values():
             # 只 hide + deleteLater，绝不能 setParent(None)：
@@ -221,8 +223,9 @@ class GameListView(QWidget):
             # 保留当前视觉顺序（可能已被拖拽过）
             new = [self.rows[r.item.key].item for r in self._rows_in_order()]
         else:
+            self.cfg = core.load_config()
             new = core.sort_items(self.items, mode,
-                                  core.get_manual_order(core.load_config()))
+                                  core.get_manual_order(self.cfg), cfg=self.cfg)
         self._apply_manual_drag()        # 拖拽开关跟排序方式走，顺序没变也要切
         if [it.key for it in new] == [it.key for it in getattr(self, "_sorted_items", [])]:
             return                       # 顺序没变就别动控件，省得无谓重绘
@@ -283,8 +286,7 @@ class GameListView(QWidget):
         counts = {
             "all": len(self.items),
             "error": sum(1 for i in self.items if i.has_error),
-            "failed": sum(1 for i in self.items
-                          if i.scanned and i.daily == "failed" and not i.excluded),
+            "failed": sum(1 for i in self.items if core.effective_failed(self.cfg, i)),
             "susp": sum(1 for i in self.items if i.suspicious and not i.excluded),
             "excluded": sum(1 for i in self.items if i.excluded),
             "ok": sum(1 for i in self.items if i.scanned and i.daily == "done"
@@ -313,7 +315,7 @@ class GameListView(QWidget):
             if self.filter == "error":
                 ok = it.has_error
             elif self.filter == "failed":
-                ok = it.scanned and it.daily == "failed" and not it.excluded
+                ok = core.effective_failed(self.cfg, it)
             elif self.filter == "susp":
                 ok = it.suspicious and not it.excluded
             elif self.filter == "excluded":
@@ -491,8 +493,8 @@ class GameRuleRow(QWidget):
         items = [(r["id"], r["name"]) for r in rules]
         dr = core.get_default_rule(cfg)
         dr_name = next((r["name"] for r in rules if r["id"] == dr), "")
-        items.append(("", f"未绑定（用默认规则：{dr_name}）" if dr_name
-                      else "未绑定（沿用默认判断方式）"))
+        items.append(("", f"未设定（用默认规则：{dr_name}）" if dr_name
+                      else "未设定（沿用默认判断方式）"))
         self.combo = ThemedCombo(items, current_id, 280)
         self.combo.changed.connect(self._on_change)
         l1.addWidget(self.combo)
@@ -714,6 +716,8 @@ class GameRulesView(QWidget):
         card.lay.addLayout(head)
         card.lay.addWidget(_label(
             "每行是一款游戏和它引用的规则；改下拉即时换规则，并只重新检查这一款。"
+            "没在下拉里选过规则的「未设定」游戏排最前，先用规则库里标的默认规则；"
+            "选一条规则（选默认规则也算）后就固定用它、不再置顶。"
             "下方开关控制日志阈值检查是否启用；超过阈值的自动化程序日志会列入关注列表，"
             "每行可以单独改自己的上限。",
             11, "text_muted", wrap=True))
@@ -778,12 +782,16 @@ class GameRulesView(QWidget):
         self._sync_opts()
         rules = core.get_rules(self.cfg)
         games = core.all_games(self.cfg)
-        # 没显式绑定规则的游戏排最前（提示用户去设；已绑定的按原顺序跟在后面）
+        # 未设定（没在下拉里选过规则）的排最前，提示用户去设；
+        # 这些游戏先用规则库里标的默认规则，选过（选默认规则也算）就固定用它
         unbound = [g for g in games if not core.is_game_bound(self.cfg, g.name)]
         bound = [g for g in games if core.is_game_bound(self.cfg, g.name)]
         _clear_layout(self.rows_lay)
         for g in unbound + bound:
-            row = GameRuleRow(self.cfg, g, rules, core.rule_id_for(self.cfg, g.name))
+            # 未设定的游戏下拉选「未设定」项，不要预选默认规则——
+            # 否则用户再选一次默认规则时不会触发 changed，永远留在置顶区
+            cur = core.rule_id_for(self.cfg, g.name) if g in bound else ""
+            row = GameRuleRow(self.cfg, g, rules, cur)
             row.rule_changed.connect(self.game_rule_changed)
             row.remove_requested.connect(self.game_remove_requested)
             row.threshold_changed.connect(self.game_threshold_changed)
@@ -791,8 +799,10 @@ class GameRulesView(QWidget):
             row.edit_requested.connect(self.game_edit_requested)
             self.rows_lay.addWidget(row)
         n_custom = sum(1 for g in games if g not in core.DAILY_GAMES)
-        self.count.setText(f"{len(games)} 款"
-                           + (f"（含 {n_custom} 款自定义）" if n_custom else ""))
+        self.count.setText(
+            f"{len(games)} 款"
+            + (f"（含 {n_custom} 款自定义）" if n_custom else "")
+            + (f" · {len(unbound)} 款未设定" if unbound else ""))
 
 
 class FolderMapView(QWidget):
@@ -1527,7 +1537,7 @@ class GameRuleDialog(ThemedDialog):
         self.body.addWidget(_label(f"「{name}」用哪条规则判断日常完成？", 13, "text", bold=True))
         self._rules = {r["id"]: r for r in rules}
         items = [(r["id"], r["name"]) for r in rules]
-        items.append(("", "未绑定（沿用默认判断方式）"))
+        items.append(("", "未设定（跟随默认规则）"))
         self.combo = ThemedCombo(items, current, 420)
         self.combo.changed.connect(self._sync)
         row = QHBoxLayout()
@@ -1588,7 +1598,7 @@ class AddGameDialog(ThemedDialog):
 
         self._rules = {r["id"]: r for r in rules}
         items = [(r["id"], r["name"]) for r in rules]
-        items.append(("", "暂不绑定（沿用默认判断方式）"))
+        items.append(("", "暂不绑定（未设定，先用默认规则）"))
         self.rule_combo = ThemedCombo(items, editing.get("rule_id",
                                                          rules[0]["id"] if rules else ""), 420)
         self.rule_combo.changed.connect(self._sync)
