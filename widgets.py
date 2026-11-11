@@ -1426,16 +1426,27 @@ class NumberStepper(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 键入编辑框：点数值区 / 直接打数字弹出，回车或失焦提交，Esc 取消
+        # 数值与单位共用一套字体，编辑框文字 / 单位绘制才能对齐
+        self._num_font = QFont("Microsoft YaHei UI")
+        self._num_font.setPixelSize(12)
+        self._suffix_w = (QFontMetrics(self._num_font).horizontalAdvance(suffix) + 4
+                          if suffix else 0)
+        self._suffix_x = 0.0
+
+        # 键入编辑框：点数值区 / 直接打数字弹出，回车或失焦提交，Esc 取消。
+        # 背景透明、占满数值区，单位由 paintEvent 紧跟输入文字绘制（不会被盖住），
+        # 编辑态的高亮框也由 paintEvent 画。
         self.editor = QLineEdit(self)
+        self.editor.setFont(self._num_font)
         self.editor.setFrame(False)
         self.editor.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.editor.setVisible(False)
         self.editor.installEventFilter(self)
         self.editor.editingFinished.connect(self._commit_editor)
-        scoped(self.editor, f"background: {rgba(THEME.p.text, 0.07)};"
+        self.editor.textChanged.connect(self._layout_editor)
+        scoped(self.editor, "background: transparent;"
                             f"color: {rgba(THEME.p.text, 1.0)};"
-                            "border: none; padding: 0 2px 0 0; font-size: 12px;")
+                            "border: none; padding: 0 2px 0 0;")
 
     # ---------- 值 ----------
     def value(self) -> int:
@@ -1461,6 +1472,24 @@ class NumberStepper(QWidget):
         up = QRectF(r.right() - bw, r.top(), bw, r.height() / 2)
         down = QRectF(r.right() - bw, r.center().y(), bw, r.height() / 2)
         return r, up, down
+
+    def _content_rect(self) -> QRectF:
+        """数值 / 单位可用区域（扣掉右侧箭头与内边距）。"""
+        r, _, _ = self._rects()
+        return QRectF(r.left() + 6, r.top() + 2,
+                      r.width() - self.BTN_W - 10, r.height() - 4)
+
+    def _layout_editor(self, *_):
+        """编辑框占满数值区，单位位置紧跟输入文字（最右不超出数值区）。"""
+        if not self.editor.isVisible():
+            return
+        c = self._content_rect()
+        self.editor.setGeometry(int(c.left()), int(c.top()),
+                                int(c.width() - 2), int(c.height()))
+        tw = QFontMetrics(self._num_font).horizontalAdvance(self.editor.text() or "0")
+        self._suffix_x = min(c.left() + 4 + tw + 3,
+                             c.right() - self._suffix_w - 2)
+        self.update()
 
     def _hit(self, pos) -> int:
         _, up, down = self._rects()
@@ -1510,15 +1539,13 @@ class NumberStepper(QWidget):
 
     # ---------- 键入编辑 ----------
     def _open_editor(self, initial: str | None = None) -> None:
-        r, _, _ = self._rects()
-        self.editor.setGeometry(
-            QRectF(r.left() + 6, r.top() + 2,
-                   r.width() - self.BTN_W - 10, r.height() - 4).toRect())
-        self.editor.setText(initial if initial else str(self._value))
         self.editor.setVisible(True)
+        self.editor.setText(initial if initial else str(self._value))
+        self._layout_editor()
         self.editor.setFocus()
         if initial:
-            self.editor.end()
+            # 不用 QLineEdit.end()：PySide6 里它要求显式 bool 参数
+            self.editor.setCursorPosition(len(self.editor.text()))
         else:
             self.editor.selectAll()
 
@@ -1573,14 +1600,22 @@ class NumberStepper(QWidget):
         painter.drawLine(QPointF(r.right() - self.BTN_W, r.top() + 4),
                          QPointF(r.right() - self.BTN_W, r.bottom() - 4))
 
-        # 数值（编辑时让位给 QLineEdit，避免叠影）
-        if not self.editor.isVisible():
-            f = QFont("Microsoft YaHei UI")
-            f.setPixelSize(12)
-            painter.setFont(f)
-            painter.setPen(QPen(qc(p.text)))
-            painter.drawText(QRectF(r.left() + 11, r.top(), r.width() - self.BTN_W - 14, r.height()),
-                             Qt.AlignLeft | Qt.AlignVCenter, f"{self._value}{self._suffix}")
+        # 数值：编辑时交给透明的 QLineEdit 画（避免叠影），单位由这里紧跟输入文字绘制，
+        # 所以键入过程中「分钟 / MB」等后缀不会消失，也不会被编辑框背景盖住。
+        painter.setFont(self._num_font)
+        painter.setPen(QPen(qc(p.text)))
+        if self.editor.isVisible():
+            hl = QPainterPath()
+            hl.addRoundedRect(self._content_rect().adjusted(0, 0, -2, 0), 5, 5)
+            painter.fillPath(hl, qc(p.accent, 0.10))
+            if self._suffix:
+                painter.drawText(
+                    QRectF(self._suffix_x, r.top(), self._suffix_w + 2, r.height()),
+                    Qt.AlignLeft | Qt.AlignVCenter, self._suffix)
+        else:
+            painter.drawText(
+                QRectF(r.left() + 11, r.top(), r.width() - self.BTN_W - 14, r.height()),
+                Qt.AlignLeft | Qt.AlignVCenter, f"{self._value}{self._suffix}")
 
         # 上下箭头
         cx = up.center().x()

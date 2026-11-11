@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.7"
+APP_VERSION = "1.7.8"
 
 # ==================== 监控配置 ====================
 
@@ -539,6 +539,26 @@ SORT_MODES_SPECIAL = [
 DEFAULT_SORT_SPECIAL = "failed_first"
 # 兼容旧调用：全部排序键合集
 DEFAULT_SORT = "default"
+
+# 「程序检查规则」页的排序：常见排序复用 sort_items；另有「未配置优先」开关（默认开）
+GAME_RULE_SORTS = [
+    ("default", "默认顺序"),
+    ("name", "按名称 A-Z"),
+    ("streak", "无错天数"),
+    ("logsize", "日志大小"),
+    ("failed_first", "未完成优先"),
+    ("error_first", "异常优先"),
+]
+DEFAULT_GAME_RULE_SORT = "default"
+
+
+def get_game_rules_sort(cfg: dict) -> str:
+    m = (cfg.get("check") or {}).get("rules_sort", DEFAULT_GAME_RULE_SORT)
+    return m if m in dict(GAME_RULE_SORTS) else DEFAULT_GAME_RULE_SORT
+
+
+def game_rules_unbound_first(cfg: dict) -> bool:
+    return bool((cfg.get("check") or {}).get("rules_unbound_first", True))
 
 
 # ==================== 游戏条目 ====================

@@ -690,6 +690,7 @@ class GameRulesView(QWidget):
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
         self.cfg = cfg
+        self.scan_items_provider = None   # 由主窗口提供带检查结果的游戏列表（排序用）
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -717,10 +718,35 @@ class GameRulesView(QWidget):
         card.lay.addWidget(_label(
             "每行是一款游戏和它引用的规则；改下拉即时换规则，并只重新检查这一款。"
             "没在下拉里选过规则的「未设定」游戏排最前，先用规则库里标的默认规则；"
-            "选一条规则（选默认规则也算）后就固定用它、不再置顶。"
+            "选一条规则（选默认规则也算）后就固定用它。"
+            "上方可以改行排序，默认把「未配置」的游戏排最前；"
             "下方开关控制日志阈值检查是否启用；超过阈值的自动化程序日志会列入关注列表，"
             "每行可以单独改自己的上限。",
             11, "text_muted", wrap=True))
+
+        # 排序：常见排序 + 「未配置优先」开关（默认勾选）
+        sort_bar = QWidget()
+        flat(sort_bar)
+        sl = QHBoxLayout(sort_bar)
+        sl.setContentsMargins(0, 8, 0, 2)
+        sl.setSpacing(8)
+        sl.addStretch(1)
+        sl.addWidget(_label("排序", 11, "text_muted"))
+        self.sort_combo = ThemedCombo(core.GAME_RULE_SORTS,
+                                      core.get_game_rules_sort(self.cfg), 132)
+        self.sort_combo.changed.connect(self._on_sort_changed)
+        self.sort_combo.setToolTip(
+            "常见排序和游戏列表一致；无错天数 / 日志大小 / 未完成优先要用上一轮检查结果")
+        sl.addWidget(self.sort_combo)
+        sl.addSpacing(12)
+        self.unbound_toggle = ToggleSwitch(core.game_rules_unbound_first(self.cfg))
+        self.unbound_toggle.setToolTip(
+            "开启时没在下拉里选过规则的「未设定」游戏整体排最前；"
+            "关闭后完全按左侧的排序方式排")
+        self.unbound_toggle.toggled.connect(self._on_unbound_changed)
+        sl.addWidget(self.unbound_toggle)
+        sl.addWidget(_label("未配置优先", 11, "text"))
+        card.lay.addWidget(sort_bar)
 
         # 日志阈值总开关 + 默认阈值：和下面每行的阈值放同一页（从设置页搬来）
         opt = QWidget()
@@ -758,8 +784,55 @@ class GameRulesView(QWidget):
 
         self.refresh(cfg)
 
+    # ---------- 排序 ----------
+    def _ordered_games(self, games):
+        """按当前设置返回行顺序；有检查结果时用运行时数据排无错天数 / 日志大小等。"""
+        live = {}
+        if self.scan_items_provider is not None:
+            try:
+                live = {it.name: it for it in (self.scan_items_provider() or [])}
+            except Exception:
+                live = {}
+        items = [live.get(g.name, g) for g in games]
+        ordered = core.sort_items(items, core.get_game_rules_sort(self.cfg), cfg=self.cfg)
+        if core.game_rules_unbound_first(self.cfg):
+            ordered = sorted(
+                ordered,
+                key=lambda g: 0 if not core.is_game_bound(self.cfg, g.name) else 1)
+        return ordered
+
+    def _apply_order(self) -> None:
+        """只调整行顺序，不重建行（避免下拉正在操作时被销毁 / 闪烁）。"""
+        widgets = {}
+        for i in range(self.rows_lay.count()):
+            w = self.rows_lay.itemAt(i).widget()
+            if w is not None:
+                widgets[w.game.name] = w
+        for idx, g in enumerate(self._ordered_games(core.all_games(self.cfg))):
+            w = widgets.get(g.name)
+            if w is not None:
+                self.rows_lay.removeWidget(w)
+                self.rows_lay.insertWidget(idx, w)
+
+    def _on_sort_changed(self, *_):
+        self.cfg.setdefault("check", {})["rules_sort"] = self.sort_combo.value()
+        self._apply_order()
+        self.config_changed.emit()
+
+    def _on_unbound_changed(self, *_):
+        self.cfg.setdefault("check", {})["rules_unbound_first"] = \
+            self.unbound_toggle.isChecked()
+        self._apply_order()
+        self.config_changed.emit()
+
     def _sync_opts(self) -> None:
         """外部改了配置（例如右键改默认阈值）后同步顶部控件，不要触发保存信号。"""
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.set_value(core.get_game_rules_sort(self.cfg))
+        self.sort_combo.blockSignals(False)
+        self.unbound_toggle.blockSignals(True)
+        self.unbound_toggle.setChecked(core.game_rules_unbound_first(self.cfg))
+        self.unbound_toggle.blockSignals(False)
         self.log_thr_toggle.blockSignals(True)
         self.log_thr_toggle.setChecked(core.log_threshold_check_enabled(self.cfg))
         self.log_thr_toggle.blockSignals(False)
@@ -782,15 +855,13 @@ class GameRulesView(QWidget):
         self._sync_opts()
         rules = core.get_rules(self.cfg)
         games = core.all_games(self.cfg)
-        # 未设定（没在下拉里选过规则）的排最前，提示用户去设；
-        # 这些游戏先用规则库里标的默认规则，选过（选默认规则也算）就固定用它
         unbound = [g for g in games if not core.is_game_bound(self.cfg, g.name)]
-        bound = [g for g in games if core.is_game_bound(self.cfg, g.name)]
         _clear_layout(self.rows_lay)
-        for g in unbound + bound:
+        for g in self._ordered_games(games):
             # 未设定的游戏下拉选「未设定」项，不要预选默认规则——
             # 否则用户再选一次默认规则时不会触发 changed，永远留在置顶区
-            cur = core.rule_id_for(self.cfg, g.name) if g in bound else ""
+            bound = core.is_game_bound(self.cfg, g.name)
+            cur = core.rule_id_for(self.cfg, g.name) if bound else ""
             row = GameRuleRow(self.cfg, g, rules, cur)
             row.rule_changed.connect(self.game_rule_changed)
             row.remove_requested.connect(self.game_remove_requested)

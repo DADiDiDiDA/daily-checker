@@ -474,6 +474,8 @@ class MainWindow(QWidget):
 
         self.page_methods = MethodsPages(self.cfg)
         mp = self.page_methods
+        # 程序检查规则页的常见排序要用带检查结果的运行时对象（无错天数 / 日志大小等）
+        mp.games.scan_items_provider = lambda: self.games
         mp.rules.new_rule_requested.connect(self.new_rule)
         mp.rules.edit_rule_requested.connect(self.edit_rule)
         mp.rules.duplicate_rule_requested.connect(self.duplicate_rule)
