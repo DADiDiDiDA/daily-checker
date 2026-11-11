@@ -397,13 +397,16 @@ def _edit(ph: str, text: str = "") -> QLineEdit:
 
 
 class RuleRow(QWidget):
-    """规则库里的一条规则：名称 + 判定方式 + 引用数 + 规则全文 + 编辑/复制/删除。"""
+    """规则库里的一条规则：名称 + 判定方式 + 引用数 + 规则全文 + 编辑/复制/删除。
+
+    可设为「默认规则」：程序检查规则里没显式绑定规则的游戏都用它。"""
 
     edit_requested = Signal(str)
     duplicate_requested = Signal(str)
     delete_requested = Signal(str)
+    default_requested = Signal(str)     # 设为默认 / 再点一次取消默认
 
-    def __init__(self, rule: dict, users: list, parent=None):
+    def __init__(self, rule: dict, users: list, is_default: bool = False, parent=None):
         super().__init__(parent)
         self.rule = rule
         col = QVBoxLayout(self)
@@ -416,11 +419,25 @@ class RuleRow(QWidget):
         if rule.get("note"):
             name.setToolTip(rule["note"])
         head.addWidget(name)
+        if is_default:
+            star = _label("默认规则", 10, "accent")
+            star.setToolTip("未显式绑定规则的游戏都引用这条；再点一次「取消默认」恢复")
+            head.addWidget(star)
         kinds = "、".join(core.METHOD_SHORT.get(m, m) for m in rule["methods"])
         head.addWidget(_label(kinds, 10, "accent"))
         head.addWidget(_label(f"{len(users)} 款在用" if users else "未被引用", 10,
                               "text_muted" if users else "warning"))
         head.addStretch(1)
+        default_btn = QPushButton("取消默认" if is_default else "设为默认")
+        default_btn.setObjectName("ghost")
+        default_btn.setCursor(Qt.PointingHandCursor)
+        default_btn.setFixedHeight(26)
+        default_btn.setToolTip(
+            "设为默认规则后，程序检查规则里没显式绑定规则的游戏都用这条"
+            if not is_default else "取消后回到原来的默认判断方式")
+        default_btn.clicked.connect(
+            lambda: self.default_requested.emit(self.rule["id"]))
+        head.addWidget(default_btn)
         for text, sig, tip in (
                 ("编辑", self.edit_requested, "改这条规则，引用它的游戏全部跟着变"),
                 ("复制", self.duplicate_requested, "复制一份再改，做成某款游戏专用"),
@@ -448,6 +465,7 @@ class GameRuleRow(QWidget):
     remove_requested = Signal(str)
     edit_requested = Signal(str)
     threshold_changed = Signal(str, int)
+    threshold_enabled_changed = Signal(str, bool)
 
     NAME_W = 112
 
@@ -471,13 +489,22 @@ class GameRuleRow(QWidget):
         l1.addWidget(self.name_lbl)
 
         items = [(r["id"], r["name"]) for r in rules]
-        items.append(("", "未绑定（沿用默认判断方式）"))
+        dr = core.get_default_rule(cfg)
+        dr_name = next((r["name"] for r in rules if r["id"] == dr), "")
+        items.append(("", f"未绑定（用默认规则：{dr_name}）" if dr_name
+                      else "未绑定（沿用默认判断方式）"))
         self.combo = ThemedCombo(items, current_id, 280)
         self.combo.changed.connect(self._on_change)
         l1.addWidget(self.combo)
         l1.addStretch(1)
 
-        # ---- 日志阈值：直接放在这一行上，改完即时生效 ----
+        # ---- 日志阈值：分项子开关 + 数值，改完即时生效 ----
+        self.thr_on = ToggleSwitch(core.threshold_check_enabled(cfg, game.name))
+        self.thr_on.setToolTip(
+            "关闭后这款游戏不参与日志体积「存疑」判定（其它游戏不受影响；"
+            "总开关在页顶部）")
+        self.thr_on.toggled.connect(self._on_thr_enabled)
+        l1.addWidget(self.thr_on)
         self.thr_lbl = _label("日志阈值", 10, "text_muted")
         self.thr_lbl.setToolTip(
             f"自动化程序 debug 日志文件夹顶层 .log 合计超过该值标记为「存疑」；\n"
@@ -487,6 +514,9 @@ class GameRuleRow(QWidget):
                                  " MB", 104)
         self.thr.valueChanged.connect(self._on_threshold)
         l1.addWidget(self.thr)
+        self._thr_on = self.thr_on.isChecked()
+        self.thr.setEnabled(self._thr_on)
+        self.thr_lbl.setEnabled(self._thr_on)
 
         self.custom = not any(g.name == game.name for g in core.DAILY_GAMES)
         edit_btn = QPushButton("编辑")
@@ -528,6 +558,13 @@ class GameRuleRow(QWidget):
         if self._building:
             return
         self.threshold_changed.emit(self.game.name, int(mb))
+
+    def _on_thr_enabled(self, on: bool) -> None:
+        self.thr.setEnabled(on)
+        self.thr_lbl.setEnabled(on)
+        if self._building:
+            return
+        self.threshold_enabled_changed.emit(self.game.name, bool(on))
 
     def refresh_theme(self) -> None:
         self.combo._restyle()
@@ -577,6 +614,7 @@ class RulesView(QWidget):
     edit_rule_requested = Signal(str)
     duplicate_rule_requested = Signal(str)
     delete_rule_requested = Signal(str)
+    set_default_requested = Signal(str)   # 设为/取消默认规则
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
@@ -623,14 +661,17 @@ class RulesView(QWidget):
         if cfg is not None:
             self.cfg = cfg
         rules = core.get_rules(self.cfg)
+        default_id = core.get_default_rule(self.cfg)
         _clear_layout(self.rows_lay)
         for r in rules:
-            row = RuleRow(r, core.rule_usage(self.cfg, r["id"]))
+            row = RuleRow(r, core.rule_usage(self.cfg, r["id"]),
+                          is_default=(r["id"] == default_id))
             row.edit_requested.connect(self.edit_rule_requested)
             row.duplicate_requested.connect(self.duplicate_rule_requested)
             row.delete_requested.connect(self.delete_rule_requested)
+            row.default_requested.connect(self.set_default_requested)
             self.rows_lay.addWidget(row)
-        self.count.setText(f"{len(rules)} 条")
+        self.count.setText(f"{len(rules)} 条" + (" · 已设默认规则" if default_id else ""))
 
 
 class GameRulesView(QWidget):
@@ -640,6 +681,7 @@ class GameRulesView(QWidget):
     game_rule_changed = Signal(str, str)
     game_remove_requested = Signal(str)
     game_threshold_changed = Signal(str, int)
+    game_threshold_enabled_changed = Signal(str, bool)
     game_edit_requested = Signal(str)  # 编辑已有游戏（改自动化程序目录等）
     config_changed = Signal()          # 日志阈值总开关 / 默认阈值变了
 
@@ -736,12 +778,16 @@ class GameRulesView(QWidget):
         self._sync_opts()
         rules = core.get_rules(self.cfg)
         games = core.all_games(self.cfg)
+        # 没显式绑定规则的游戏排最前（提示用户去设；已绑定的按原顺序跟在后面）
+        unbound = [g for g in games if not core.is_game_bound(self.cfg, g.name)]
+        bound = [g for g in games if core.is_game_bound(self.cfg, g.name)]
         _clear_layout(self.rows_lay)
-        for g in games:
+        for g in unbound + bound:
             row = GameRuleRow(self.cfg, g, rules, core.rule_id_for(self.cfg, g.name))
             row.rule_changed.connect(self.game_rule_changed)
             row.remove_requested.connect(self.game_remove_requested)
             row.threshold_changed.connect(self.game_threshold_changed)
+            row.threshold_enabled_changed.connect(self.game_threshold_enabled_changed)
             row.edit_requested.connect(self.game_edit_requested)
             self.rows_lay.addWidget(row)
         n_custom = sum(1 for g in games if g not in core.DAILY_GAMES)
@@ -1084,9 +1130,10 @@ class DashboardView(QWidget):
                 w.hide()               # 先隐藏再销毁；保持父子关系，避免变成顶层小窗
                 w.deleteLater()
         attn = [i for i in self._items
-                if not i.excluded and (i.has_error
-                                       or core.effective_failed(self._cfg, i)
-                                       or self._suspect_of(i))]
+                if not i.excluded and core.manual_state_of(self._cfg, i) != "forced"
+                and (i.has_error
+                     or core.effective_failed(self._cfg, i)
+                     or self._suspect_of(i))]
         # 默认：未完成 → 异常 → 其它 → 已修复（倒数第二）→ 存疑（最后）；可切换其它方式
         attn = core.sort_summary_items(attn, self._cfg, self._summary_sort)
         p = THEME.p
@@ -1158,14 +1205,14 @@ class DashboardView(QWidget):
                 add_badge(short, p.danger, flag)
             if core.effective_failed(self._cfg, it):
                 add_badge("未完成", p.warning,
-                          "手动设置，下一轮检查自动恢复" if manual == "failed" else "")
+                          "手动设置，次日 0 点自动失效" if manual == "failed" else "")
             if self._suspect_of(it):
                 add_badge("存疑", p.accent)
             if manual == "done" and it.has_error:
                 add_badge("手动已完成", p.success,
-                          "右键可清除；下一轮检查自动恢复")
+                          "右键可清除；次日 0 点自动失效")
             if fixed:
-                add_badge("已修复", p.success)
+                add_badge("已修复", p.success, "次日 0 点自动失效")
 
             btn = QPushButton("×" if fixed else "✓")
             btn.setObjectName("ghost")
@@ -1194,14 +1241,21 @@ class DashboardView(QWidget):
         self._summary_tail(rows)
 
     def _cell_menu(self, cell, pos, name: str, fixed: bool, manual: str) -> None:
-        """关注列表格子右键菜单：手动设置完成状态 / 已修复 / 清除覆盖。"""
+        """关注列表格子右键菜单：手动设置完成状态 / 强制已完成 / 已修复 / 清除覆盖。
+
+        所有记号都只有当天有效，次日（0 点后）自动清除。"""
         menu = QMenu(cell)
         a_done = menu.addAction("设为已完成")
-        a_done.setToolTip("下轮检查开始时自动恢复为真实结果")
+        a_done.setToolTip("按已完成看待；次日 0 点自动失效")
         a_failed = menu.addAction("设为未完成")
+        a_failed.setToolTip("按未完成看待；次日 0 点自动失效")
+        a_force = menu.addAction("强制已完成（今日不再关注）")
+        a_force.setToolTip(
+            "直接判定为已完成，并从首页关注列表排除；次日 0 点自动失效")
         a_clear = menu.addAction("清除手动状态（跟随检查结果）") if manual else None
         menu.addSeparator()
         a_fixed = menu.addAction("取消已修复" if fixed else "标记已修复")
+        a_fixed.setToolTip("已修复只保留到今天，次日 0 点自动失效")
         chosen = menu.exec(cell.mapToGlobal(pos))
         if chosen is None:
             return
@@ -1209,6 +1263,8 @@ class DashboardView(QWidget):
             self.state_requested.emit(name, "done")
         elif chosen is a_failed:
             self.state_requested.emit(name, "failed")
+        elif chosen is a_force:
+            self.state_requested.emit(name, "forced")
         elif a_clear is not None and chosen is a_clear:
             self.state_requested.emit(name, "")
         elif chosen is a_fixed:
@@ -1749,15 +1805,19 @@ class _ElideLabel(QLabel):
 
 
 class ScanDirDialog(ThemedDialog):
-    """设置 → 扫描目录：勾选参与扫描的根目录，并可排除其中的子目录。"""
+    """设置 → 扫描目录：勾选参与扫描的根目录、排除子目录、设扫描深度，
+    并可预览当前配置会扫到哪些游戏目录 / 异常文件夹。"""
 
-    def __init__(self, parent, dirs: list, excludes: list):
+    def __init__(self, parent, cfg: dict):
+        ck = cfg.get("check") or {}
         super().__init__(parent, "扫描目录", 660)
-        self._dirs = [(str(d), True) for d in (dirs or [])]
-        self._excl = [str(x) for x in (excludes or [])]
+        self._cfg = cfg
+        self._dirs = [(str(d), True) for d in (ck.get("scan_dirs") or [])] or \
+                     [(str(d), True) for d in core.DEFAULT_SCAN_DIRS]
+        self._excl = [str(x) for x in (ck.get("scan_excludes") or [])]
 
         self.body.addWidget(_label(
-            "程序在这些目录里找 on_error / screencap 异常文件夹，以及 My-maawork 下的各游戏目录。"
+            "程序在这些目录里找 on_error / screencap 异常文件夹和各游戏目录。"
             "可以加多个（比如别的盘），勾选决定参不参与；不想被扫的子目录放到下面的排除列表。",
             11, "text_muted", wrap=True))
 
@@ -1804,9 +1864,59 @@ class ScanDirDialog(ThemedDialog):
         add_excl.clicked.connect(self._add_excl)
         self.body.addWidget(add_excl, 0, Qt.AlignLeft)
 
+        # ---- 扫描深度 + 预览 ----
+        self.body.addWidget(_label("扫描深度", 12, "text", bold=True))
+        dep_row = QHBoxLayout()
+        dep_row.setSpacing(10)
+        self.depth_spin = NumberStepper(core.get_scan_depth(self._cfg), 0, 16, 1,
+                                        "", 120)
+        self.depth_spin.setToolTip(
+            "进入根目录下几层找异常文件夹 / 游戏目录；0 = 不限。\n"
+            "目录树很大时调小能明显加快检查")
+        dep_row.addWidget(self.depth_spin)
+        dep_row.addWidget(_label("层（0 = 不限）", 10, "text_muted"))
+        dep_row.addSpacing(12)
+        scan_btn = QPushButton("扫描预览")
+        scan_btn.setObjectName("soft")
+        scan_btn.setCursor(Qt.PointingHandCursor)
+        scan_btn.setFixedHeight(30)
+        scan_btn.setToolTip("按上面的目录 / 排除 / 深度做一次只读扫描，看会找到什么")
+        scan_btn.clicked.connect(self._preview)
+        dep_row.addWidget(scan_btn)
+        dep_row.addStretch(1)
+        self.body.addLayout(dep_row)
+
+        self.preview_out = QPlainTextEdit()
+        self.preview_out.setReadOnly(True)
+        self.preview_out.setVisible(False)
+        self.preview_out.setMaximumHeight(150)
+        self.body.addWidget(self.preview_out)
+
         self._rebuild_dirs()
         self._rebuild_excl()
         self.add_footer()
+
+    def _preview(self) -> None:
+        ck = dict(self._cfg.get("check") or {})
+        ck["scan_dirs"] = [d for d, on in self._dirs if on]
+        ck["scan_excludes"] = list(self._excl)
+        ck["scan_depth"] = self.depth_spin.value()
+        res = core.preview_scan({"check": ck})
+        lines = []
+        games = res["games"]
+        lines.append(f"游戏目录（{len(games)}）：" + ("、".join(games) if games else "无"))
+        errs = res["errors"]
+        if errs:
+            lines.append("异常文件夹：")
+            for t, paths in errs.items():
+                lines.append(f"  {core.TARGET_DESC_MAP.get(t, t)} {t}（{len(paths)}）：")
+                lines.extend(f"    · {p}" for p in paths[:12])
+                if len(paths) > 12:
+                    lines.append(f"    … 还有 {len(paths) - 12} 个")
+        else:
+            lines.append("异常文件夹：未发现")
+        self.preview_out.setPlainText("\n".join(lines))
+        self.preview_out.setVisible(True)
 
     # ---------- 列表外壳 ----------
     def _list_scroll(self, lay: QVBoxLayout, rows: int) -> QScrollArea:
@@ -1958,7 +2068,8 @@ class ScanDirDialog(ThemedDialog):
     # ---------- 结果 ----------
     def values(self) -> dict:
         return {"dirs": [p for p, on in self._dirs if on],
-                "excludes": list(self._excl)}
+                "excludes": list(self._excl),
+                "depth": int(self.depth_spin.value())}
 
 
 class ExcludeDialog(ThemedDialog):
@@ -1969,8 +2080,6 @@ class ExcludeDialog(ThemedDialog):
     def __init__(self, parent, names: list, excluded: list):
         super().__init__(parent, "排除检查的游戏", 560)
         self.body.addWidget(_label("勾选的游戏不再参与日常检查、异常监控与无错天数统计。",
-                                   11, "text_muted", wrap=True))
-        self.body.addWidget(_label("提示：只影响本程序；原脚本链仍会检查全部游戏。",
                                    11, "text_muted", wrap=True))
         self.chips: dict[str, Chip] = {}
         box = QWidget()
@@ -2322,12 +2431,12 @@ class SettingsPage(QWidget):
         ck = self.cfg.setdefault("check", {})
         self._group(lay, "检查参数")
 
-        self.cache_edit = QLineEdit(ck.get("cache_dir") or r"D:\Automate\Cache")
+        self.cache_edit = QLineEdit(ck.get("cache_dir") or core.default_cache_root())
         self.cache_edit.setMinimumWidth(330)
         self.cache_edit.editingFinished.connect(self._save_cache)
         self.cache_row = self._row(
             lay, "folder", "检测数据目录",
-            "无错天数状态与 DailyCheck.txt 报告存放处；默认与原脚本共用，天数连续",
+            "无错天数状态与 DailyCheck.txt 报告存放处；默认在程序根目录",
             self.cache_edit)
 
         self.streak_toggle = ToggleSwitch(core.streak_check_enabled(self.cfg))
@@ -2340,7 +2449,7 @@ class SettingsPage(QWidget):
         self.err_toggle = ToggleSwitch(core.error_check_enabled(self.cfg))
         self.err_toggle.toggled.connect(self._save_check)
         self._row(lay, "check", "检测 on_error / screencap 文件夹",
-                  "开启后扫描 My-maawork 目录树，发现异常文件夹即标记对应游戏并清零无错天数；"
+                  "开启后扫描设置的扫描目录树（在「扫描目录」里配置），发现异常文件夹即标记对应游戏并清零无错天数；"
                   "关闭后跳过文件夹异常检测（日常失败仍会清零）",
                   self.err_toggle)
 
@@ -2381,7 +2490,7 @@ class SettingsPage(QWidget):
         if hasattr(self, "scan_row"):
             self.scan_row.set_desc(self._scan_desc())
         ck = self.cfg.get("check") or {}
-        self.cache_edit.setText(ck.get("cache_dir") or r"D:\Automate\Cache")
+        self.cache_edit.setText(ck.get("cache_dir") or core.default_cache_root())
 
     def _save_check(self, *_):
         ck = self.cfg.setdefault("check", {})
@@ -2393,7 +2502,7 @@ class SettingsPage(QWidget):
         ck = self.cfg.setdefault("check", {})
         text = self.cache_edit.text().strip()
         ck["cache_dir"] = text if text and os.path.isabs(text) else ""
-        self.cache_edit.setText(ck["cache_dir"] or r"D:\Automate\Cache")
+        self.cache_edit.setText(ck["cache_dir"] or core.default_cache_root())
         self.config_changed.emit()
 
     # ---------- 关于 ----------
@@ -2417,7 +2526,7 @@ class SettingsPage(QWidget):
 
     def _open_cache(self) -> None:
         target = os.path.normpath((self.cfg.get("check") or {}).get("cache_dir")
-                                  or r"D:\Automate\Cache")
+                                  or core.default_cache_root())
         os.makedirs(target, exist_ok=True)
         core.open_in_explorer(target)
 

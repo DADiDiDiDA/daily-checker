@@ -255,6 +255,12 @@ class MainWindow(QWidget):
         THEME.set_mode(self.cfg.get("ui", {}).get("theme", "auto"))
         THEME.set_blur(bool(self.cfg.get("ui", {}).get("blur", True)))
 
+        # 启动清理：首页记号次日失效；旧格式手动状态升级；检测数据目录迁移
+        core.migrate_manual_states(self.cfg)
+        core.migrate_cache_state(self.cfg)
+        if core.expire_marks(self.cfg):
+            core.save_config(self.cfg)
+
         self.engine = core.Engine(self.cfg)
         self.games: list[core.Game] = []
         self._default_mb_seen = int((self.cfg.get("check") or {}).get(
@@ -477,7 +483,9 @@ class MainWindow(QWidget):
         mp.games.game_rule_changed.connect(self.set_game_rule)
         mp.games.game_remove_requested.connect(self.remove_game)
         mp.games.game_threshold_changed.connect(self.set_game_threshold)
+        mp.games.game_threshold_enabled_changed.connect(self.set_game_threshold_enabled)
         mp.games.config_changed.connect(self._save_cfg)
+        mp.rules.set_default_requested.connect(self.set_default_rule)
         mp.folder.folder_map_manage_requested.connect(self.manage_folder_map)
         mp.folder.log_folders_changed.connect(self.on_log_folders_changed)
 
@@ -1077,7 +1085,8 @@ class MainWindow(QWidget):
         self._save_cfg()
         if it is not None:
             it.threshold_mb = mb
-            on = core.log_threshold_check_enabled(self.cfg)
+            on = core.log_threshold_check_enabled(self.cfg) \
+                and core.threshold_check_enabled(self.cfg, name)
             it.suspicious = bool(on and it.is_maawork and it.log_size > mb * 1024 * 1024
                                  and it.daily != "failed" and not it.has_error
                                  and not it.excluded)
@@ -1094,6 +1103,47 @@ class MainWindow(QWidget):
         if toast:
             tail = "（= 默认值，恢复跟随默认）" if mb == default else ""
             self.toast.show_text(f"「{name}」日志阈值已设为 {mb}MB{tail}")
+            # 游戏列表右键改的阈值，让程序检查规则页的步进器立刻同步
+            self.page_methods.games.refresh(self.cfg)
+
+    def set_game_threshold_enabled(self, name: str, on: bool) -> None:
+        """程序检查规则页的分项阈值子开关。"""
+        core.set_threshold_enabled(self.cfg, name, on)
+        it = next((i for i in self.games if i.name == name), None)
+        if it is not None:
+            on_all = core.log_threshold_check_enabled(self.cfg)
+            en = on and on_all
+            it.suspicious = bool(en and it.is_maawork
+                                 and it.log_size > it.threshold_mb * 1024 * 1024
+                                 and it.daily != "failed" and not it.has_error
+                                 and not it.excluded)
+            if self.last_result:
+                susp = {k: v for k, v in self.last_result["suspicious"].items()
+                        if k != name} if en else {}
+                if it.suspicious:
+                    susp[name] = it.log_size
+                self.last_result["suspicious"] = susp
+            self._refresh_game_row(it)
+            self.page_home.refresh_stats()
+        self._save_cfg()
+        self.toast.show_text(
+            f"「{name}」日志阈值检查已{'开启' if on else '关闭'}"
+            + ("" if on else "（不参与存疑判定）"))
+
+    def set_default_rule(self, rid: str) -> None:
+        """规则库设为/取消默认规则；未显式绑定规则的游戏都改用默认规则。"""
+        was = core.get_default_rule(self.cfg)
+        core.set_default_rule(self.cfg, rid)
+        self._save_cfg()
+        now = core.get_default_rule(self.cfg)
+        self.page_methods.rules.refresh(self.cfg)
+        self.page_methods.games.refresh(self.cfg)
+        if now:
+            rname = next((r["name"] for r in core.get_rules(self.cfg)
+                          if r["id"] == now), now)
+            self.toast.show_text(f"已把「{rname}」设为默认规则，未绑定规则的游戏都改用它")
+        elif was:
+            self.toast.show_text("已取消默认规则，未绑定的游戏回到原来的判断方式")
 
     # ---------- 判定规则库 ----------
     def edit_method(self, key: str) -> None:
@@ -1345,13 +1395,13 @@ class MainWindow(QWidget):
 
     def manage_scan_dirs(self) -> None:
         """设置页「扫描目录 · 管理」：勾选根目录、排除子目录。"""
-        dlg = ScanDirDialog(self, core.get_scan_dirs(self.cfg),
-                            core.get_scan_excludes(self.cfg))
+        dlg = ScanDirDialog(self, self.cfg)
         if not dlg.exec():
             return
         v = dlg.values()
         dirs = core.set_scan_dirs(self.cfg, v["dirs"])
         excl = core.set_scan_excludes(self.cfg, v["excludes"])
+        core.set_scan_depth(self.cfg, v["depth"])
         self._save_cfg()
         # 扫描范围变了，异常标记全部作废，重扫一遍
         for it in self.games:
@@ -1394,12 +1444,15 @@ class MainWindow(QWidget):
         self.page_home.set_summary_sort(mode)
 
     def set_manual_state(self, name: str, state: str) -> None:
-        """总览右键手动设置状态：done / failed / 空=清除（恢复跟随检查结果）。"""
+        """总览右键手动设置状态：done / failed / forced=强制已完成 / 空=清除。
+
+        所有记号都只有当天有效，次日 0 点后自动失效。"""
         core.set_manual_state(self.cfg, name, state or None)
         self._save_cfg()
         self.page_home.refresh_stats()
-        msg = {"done": f"「{name}」已设为已完成（下轮检查开始时自动恢复）",
-               "failed": f"「{name}」已设为未完成（下轮检查开始时自动恢复）"}.get(state)
+        msg = {"done": f"「{name}」已设为已完成（次日 0 点自动失效）",
+               "failed": f"「{name}」已设为未完成（次日 0 点自动失效）",
+               "forced": f"「{name}」已强制完成，从关注列表排除（次日 0 点自动失效）"}.get(state)
         if msg is None:
             msg = f"「{name}」已清除手动状态，恢复跟随检查结果"
         self.toast.show_text(msg)

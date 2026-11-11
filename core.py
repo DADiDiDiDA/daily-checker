@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -25,12 +26,11 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.4"
+APP_VERSION = "1.7.5"
 
-# ==================== 监控配置（与原脚本一致） ====================
+# ==================== 监控配置 ====================
 
-BASE_DIR = r"D:\Automate\My-maawork"
-DEFAULT_SCAN_DIRS = [BASE_DIR]      # 默认扫描的自动化程序根目录，可在设置里增删
+DEFAULT_SCAN_DIRS = [r"D:\Automate"]   # 默认扫描的自动化程序根目录，可在设置里增删
 TARGET_FOLDERS = ["on_error", "screencap"]
 DEBUG_FOLDER_NAME = "debug"
 
@@ -50,7 +50,7 @@ FOLDER_NAME_MAP: Dict[str, str] = {
     "M9A": "1999",
     "MAA": "明日方舟",
     "MaaEnd": "终末地",
-    # —— MFAA 系（放在 My-maawork 下，关键词去除了 MFAA 前缀）——
+    # —— MFAA 系（关键词去除了 MFAA 前缀）——
     "Watcher-of-Realms": "潮汐守望者",
     "E7": "第七史诗",
     "Resonance": "雷索纳斯",
@@ -129,7 +129,7 @@ SUMMARY_SORTS = [
 ]
 DEFAULT_SUMMARY_SORT = "state"
 
-# 日常完成判断方式（第 1 种与原脚本一致）
+# 日常完成判断方式
 # 说明文字要写清「看哪些文件 / 比什么 / 以什么为准」，别只写「关键词匹配」
 METHODS = [
     ("keyword", "关键字（不限日期）",
@@ -342,13 +342,17 @@ def _legacy_rule_id(cfg: dict, game_name: str) -> str:
 def rule_id_for(cfg: dict, game_name: str) -> str:
     """该游戏引用的规则 id；空字符串表示「没绑定，沿用默认判断方式」。
 
-    优先级：界面里显式绑定 > 旧版单游戏方式（能对上规则就认） > 内置默认规则。"""
+    优先级：界面里显式绑定 > 默认规则（规则库里标的） >
+    旧版单游戏方式（能对上规则就认） > 内置默认规则。"""
     ck = cfg.get("check") or {}
     stored = ck.get("rule_map") or {}
     if game_name in stored:
         rid = str(stored.get(game_name) or "")
         # 规则被删掉后这里会留下悬空 id，认作「未绑定」更安全
         return rid if (not rid or get_rule(cfg, rid)) else ""
+    dr = get_default_rule(cfg)
+    if dr:
+        return dr
     legacy = _legacy_rule_id(cfg, game_name)
     if legacy:
         return legacy
@@ -361,6 +365,28 @@ def rule_usage(cfg: dict, rule_id: str) -> List[str]:
     """哪些游戏在用这条规则（按当前解析结果算）。"""
     return [g.name for g in all_games(cfg)
             if rule_id and rule_id_for(cfg, g.name) == rule_id]
+
+
+def get_default_rule(cfg: dict) -> str:
+    """规则库里标了「默认规则」的那条 id（不存在 / 被删了则返回空）。"""
+    ck = cfg.get("check") or {}
+    rid = str(ck.get("default_rule") or "")
+    return rid if rid and get_rule(cfg, rid) else ""
+
+
+def set_default_rule(cfg: dict, rid: str) -> None:
+    """设置 / 取消默认规则；再传一次同 id 即取消。"""
+    ck = cfg.setdefault("check", {})
+    rid = str(rid or "")
+    if rid and rid != ck.get("default_rule") and get_rule(cfg, rid):
+        ck["default_rule"] = rid
+    else:
+        ck.pop("default_rule", None)
+
+
+def is_game_bound(cfg: dict, game_name: str) -> bool:
+    """游戏在程序检查规则页是否显式设置过规则（区别于回落到默认规则）。"""
+    return game_name in ((cfg.get("check") or {}).get("rule_map") or {})
 
 
 def rule_of(cfg: dict, game_name: str) -> dict:
@@ -559,6 +585,32 @@ def config_dir() -> str:
     return app_dir()
 
 
+def default_cache_root() -> str:
+    """检测数据目录默认 = 程序根目录（exe 所在目录 / 源码目录）。"""
+    return app_dir()
+
+
+LEGACY_CACHE_ROOT = r"D:\Automate\Cache"      # 旧版默认位置（迁移用）
+
+
+def migrate_cache_state(cfg: dict) -> bool:
+    r"""老版本默认把状态放在 D:\Automate\Cache；改为程序根目录后把状态文件搬过来，
+    保住无错天数连续。只在「没手动设置过目录 + 新位置没文件 + 旧位置有文件」时搬。"""
+    if str((cfg.get("check") or {}).get("cache_dir") or "").strip():
+        return False
+    new_root = default_cache_root()
+    old_state = os.path.join(LEGACY_CACHE_ROOT, "error_detect_state.json")
+    new_state = os.path.join(new_root, "error_detect_state.json")
+    if not os.path.isfile(old_state) or os.path.isfile(new_state):
+        return False
+    try:
+        os.makedirs(new_root, exist_ok=True)
+        shutil.copy2(old_state, new_state)
+        return True
+    except Exception:
+        return False
+
+
 def cache_dir() -> str:
     return os.path.join(app_dir(), "config")
 
@@ -738,6 +790,83 @@ def remove_game(cfg: dict, name: str) -> bool:
     ck["excluded"] = [x for x in (ck.get("excluded") or []) if x != name]
     ck["manual_order"] = [x for x in (ck.get("manual_order") or []) if x != name]
     return True
+
+
+def threshold_check_enabled(cfg: dict, game_name: str) -> bool:
+    """分项目的日志阈值子开关（check.threshold_enabled 映射；缺省 = 开）。"""
+    en = (cfg.get("check") or {}).get("threshold_enabled")
+    if not isinstance(en, dict):
+        return True
+    return bool(en.get(game_name, True))
+
+
+def set_threshold_enabled(cfg: dict, game_name: str, on: bool) -> None:
+    """设置单款游戏的日志阈值子开关；开 = 删掉覆盖（跟随默认开）。"""
+    ck = cfg.setdefault("check", {})
+    en = dict(ck.get("threshold_enabled") or {})
+    if on:
+        en.pop(game_name, None)
+    else:
+        en[game_name] = False
+    if en:
+        ck["threshold_enabled"] = en
+    else:
+        ck.pop("threshold_enabled", None)
+
+
+def get_scan_depth(cfg: dict) -> int:
+    """扫描深度（进入根目录下几层找异常文件夹 / 游戏目录；0 = 不限）。"""
+    try:
+        d = int((cfg.get("check") or {}).get("scan_depth", 0))
+    except Exception:
+        d = 0
+    return max(0, d)
+
+
+def set_scan_depth(cfg: dict, depth: int) -> int:
+    d = max(0, min(16, int(depth)))
+    cfg.setdefault("check", {})["scan_depth"] = d
+    return d
+
+
+def preview_scan(cfg: dict) -> dict:
+    """按给定配置做一次只读扫描预览（扫描目录对话框的「扫描预览」按钮）。
+
+    返回 {"games": 会当作游戏目录的一级子目录,
+          "errors": {on_error/screencap: [相对路径,…]}}。"""
+    folder_map = get_folder_map(cfg)
+    excludes = get_scan_excludes(cfg)
+    depth = get_scan_depth(cfg)
+    targets = set(get_target_folders(cfg))
+    games: List[str] = []
+    errors: Dict[str, List[str]] = {}
+    for root in get_scan_dirs(cfg):
+        root = str(root)
+        if not os.path.isdir(root):
+            continue
+        base = len(os.path.normpath(root).split(os.sep))
+        try:
+            entries = os.listdir(root)
+        except Exception:
+            continue
+        for n in sorted(entries):
+            p = os.path.join(root, n)
+            if os.path.isdir(p) and folder_keyword_hit(n, folder_map) \
+                    and not is_excluded_dir(p, excludes) and n not in games:
+                games.append(n)
+        if not targets:
+            continue
+        for dirpath, dirnames, _ in os.walk(root):
+            dirnames[:] = [d for d in dirnames
+                           if not is_excluded_dir(os.path.join(dirpath, d), excludes)]
+            if depth and len(os.path.normpath(dirpath).split(os.sep)) - base >= depth:
+                dirnames[:] = []          # 到达深度上限，不再下探
+            hits = [d for d in dirnames if d in targets]
+            if hits:
+                rel = os.path.normpath(os.path.relpath(dirpath, root))
+                for h in hits:
+                    errors.setdefault(h, []).append(os.path.join(rel, h))
+    return {"games": games, "errors": errors, "depth": depth}
 
 
 def get_threshold_mb(cfg: dict, game_name: str) -> int:
@@ -937,7 +1066,7 @@ def resolve_folder_name(name: str, folder_map: dict) -> str:
 
 
 def get_scan_dirs(cfg: dict) -> List[str]:
-    """要扫描的自动化程序根目录（默认只有 My-maawork）。"""
+    """要扫描的自动化程序根目录（默认 D:\\Automate，可在设置里增删）。"""
     raw = (cfg.get("check") or {}).get("scan_dirs")
     if raw is None:
         return list(DEFAULT_SCAN_DIRS)
@@ -1092,7 +1221,65 @@ def program_dir_of(folder: str, cfg: Optional[dict] = None) -> str:
     return os.path.dirname(p) if os.path.basename(p).lower() in names else p
 
 
-# ---------- 关注列表：手动标记「已修复」+ 排序 ----------
+# ---------- 关注列表：手动标记（已修复 / 手动状态 / 强制已完成，均当日有效） ----------
+
+VALID_MANUAL_STATES = ("done", "failed", "forced")
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _manual_raw(cfg: dict) -> dict:
+    raw = (cfg.get("check") or {}).get("manual_states") or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def migrate_manual_states(cfg: dict) -> None:
+    """旧格式（游戏名 → 状态字符串）升级为带日期的 dict；无日期视为今天打的。"""
+    raw = _manual_raw(cfg)
+    if not any(isinstance(v, str) for v in raw.values()):
+        return
+    out = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            out[str(k)] = v
+        elif v in ("done", "failed"):
+            out[str(k)] = {"state": v, "date": _today()}
+    ck = cfg.setdefault("check", {})
+    if out:
+        ck["manual_states"] = out
+    else:
+        ck.pop("manual_states", None)
+
+
+def expire_marks(cfg: dict) -> bool:
+    """首页右键的记号只有当天有效：次日（0 点后）自动清除。
+
+    覆盖 fixed_marks（已修复）与 manual_states（已完成/未完成/强制已完成）。
+    返回是否有变化（调用方据此决定要不要落盘）。"""
+    today = _today()
+    ck = cfg.setdefault("check", {})
+    changed = False
+    fm = get_fixed_marks(cfg)
+    keep_fm = {k: v for k, v in fm.items() if str(v)[:10] == today}
+    if len(keep_fm) != len(fm):
+        changed = True
+    if keep_fm:
+        ck["fixed_marks"] = keep_fm
+    else:
+        ck.pop("fixed_marks", None)
+    raw = _manual_raw(cfg)
+    keep_ms = {k: v for k, v in raw.items()
+               if isinstance(v, dict) and str(v.get("date") or "")[:10] == today}
+    if len(keep_ms) != len(raw):
+        changed = True
+    if keep_ms:
+        ck["manual_states"] = keep_ms
+    else:
+        ck.pop("manual_states", None)
+    return changed
+
 
 def get_fixed_marks(cfg: dict) -> Dict[str, str]:
     raw = (cfg.get("check") or {}).get("fixed_marks") or {}
@@ -1102,16 +1289,17 @@ def get_fixed_marks(cfg: dict) -> Dict[str, str]:
 
 
 def is_fixed(cfg: dict, game) -> bool:
+    """「已修复」标记：只有当天打的才算数（次日 0 点自动失效）。"""
     name = game if isinstance(game, str) else game.name
-    return name in get_fixed_marks(cfg)
+    return get_fixed_marks(cfg).get(name, "")[:10] == _today()
 
 
 def set_fixed(cfg: dict, name: str, on: bool) -> bool:
-    """标记只是加个状态，不把游戏移出关注列表；再点一次即可取消。"""
+    """标记只是加个状态，不把游戏移出关注列表；再点一次即可取消。次日失效。"""
     ck = cfg.setdefault("check", {})
     marks = get_fixed_marks(cfg)
     if on:
-        marks[name] = time.strftime("%Y-%m-%d %H:%M:%S")
+        marks[name] = _today()
     else:
         marks.pop(name, None)
     ck["fixed_marks"] = marks
@@ -1119,11 +1307,14 @@ def set_fixed(cfg: dict, name: str, on: bool) -> bool:
 
 
 def get_manual_states(cfg: dict) -> Dict[str, str]:
-    """手动覆盖的完成状态（总览右键设置）：游戏名 → done / failed。"""
-    raw = (cfg.get("check") or {}).get("manual_states") or {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(k): str(v) for k, v in raw.items() if v in ("done", "failed")}
+    """首页右键的手动状态：游戏名 → done / failed / forced（只算今天的）。"""
+    out: Dict[str, str] = {}
+    for k, v in _manual_raw(cfg).items():
+        state = v.get("state") if isinstance(v, dict) else v
+        date = str(v.get("date") or "") if isinstance(v, dict) else ""
+        if state in VALID_MANUAL_STATES and date == _today():
+            out[str(k)] = state
+    return out
 
 
 def manual_state_of(cfg: dict, name) -> str:
@@ -1132,34 +1323,36 @@ def manual_state_of(cfg: dict, name) -> str:
 
 
 def set_manual_state(cfg: dict, name, state) -> None:
-    """手动把某游戏标成已完成 / 未完成；state 为空则清除，恢复跟随检查结果。
+    """首页右键设置手动状态：done / failed / forced（强制已完成）。
 
-    手动状态只到下一轮检查开始为止（run_check 会清空），已修复标记不受影响。"""
+    state 为其它值则清除该游戏的覆盖。所有记号次日 0 点自动失效。"""
     name = name if isinstance(name, str) else name.name
     ck = cfg.setdefault("check", {})
-    ms = get_manual_states(cfg)
-    if state in ("done", "failed"):
-        ms[name] = state
+    raw = dict(_manual_raw(cfg))
+    if state in VALID_MANUAL_STATES:
+        raw[name] = {"state": state, "date": _today()}
     else:
-        ms.pop(name, None)
-    if ms:
-        ck["manual_states"] = ms
+        raw.pop(name, None)
+    if raw:
+        ck["manual_states"] = raw
     else:
         ck.pop("manual_states", None)
 
 
 def clear_manual_states(cfg: dict) -> None:
-    """新一轮检查开始时清空手动覆盖，让真实结果接管（已修复标记保留）。"""
+    """清空全部手动状态（保留兼容；正常流程改用 expire_marks 按日期清理）。"""
     ck = cfg.setdefault("check", {})
     ck.pop("manual_states", None)
 
 
 def effective_failed(cfg: dict, i) -> bool:
-    """考虑手动覆盖后的「未完成」判定（排序 / 关注列表 / 统计都用它）。"""
+    """考虑手动覆盖后的「未完成」判定（排序 / 关注列表 / 统计都用它）。
+
+    强制已完成 / 手动已完成 → 永远不算未完成；手动未完成 → 算。"""
     ms = manual_state_of(cfg, i)
     if ms == "failed":
         return not i.excluded
-    if ms == "done":
+    if ms in ("done", "forced"):
         return False
     return bool(i.scanned and i.daily == "failed" and not i.excluded)
 
@@ -1264,10 +1457,13 @@ class Engine:
         self.cancel = threading.Event()
         self.state: Dict = {}
 
-    # ---------- 状态文件（与原脚本共用 D:\Automate\Cache） ----------
+    # ---------- 状态文件（检测数据目录，默认在程序根目录） ----------
     def _cache_root(self) -> str:
-        return os.path.normpath((self.cfg.get("check") or {}).get("cache_dir")
-                                or r"D:\Automate\Cache")
+        return default_cache_root() if not self._cache_dir_override() \
+            else os.path.normpath(self._cache_dir_override())
+
+    def _cache_dir_override(self) -> str:
+        return str((self.cfg.get("check") or {}).get("cache_dir") or "").strip()
 
     def _state_path(self) -> str:
         return os.path.join(self._cache_root(), "error_detect_state.json")
@@ -1327,7 +1523,7 @@ class Engine:
         streaks: Dict[str, int] = self.state.get("games", {}) or {}
         excluded = set(get_excluded(self.cfg))
         games: List[Game] = []
-        # 判定归属必须用「当前扫描目录」，不能用写死的 BASE_DIR，
+        # 判定归属必须用「当前扫描目录」，不能用写死的默认目录，
         # 否则设置里新增的根目录下游戏拿不到存疑/日志体积/无错天数。
         scan_roots = [os.path.normpath(d).lower()
                       for d in get_scan_dirs(self.cfg) if str(d).strip()]
@@ -1542,7 +1738,7 @@ class Engine:
                 bucket = found.setdefault(display, set())
                 for t in hits:
                     bucket.add(t)
-                # My-maawork 游戏条目直接标记，列表行能立刻看到
+                # 扫描目录内的游戏条目直接标记，列表行能立刻看到
                 it = by_name.get(display)
                 if it is not None:
                     it.error_flags |= set(hits)
@@ -1576,7 +1772,7 @@ class Engine:
         last_dates: Dict[str, str] = self.state.setdefault("game_last_dates", {})
         for game in all_games:
             if last_dates.get(game) == today:
-                # 今天已计过（脚本链先跑过），但本轮失败仍要把连续天数清零
+                # 今天已计过，但本轮失败仍要把连续天数清零
                 if game in error_games or game in daily_failed:
                     games_state[game] = 0
                 continue
@@ -1595,9 +1791,8 @@ class Engine:
         cancel 由调用方在启动 worker 前清理；这里再 clear 会把用户刚点下的
         「停止」一起抹掉（GUI 线程 set 与 worker 启动之间存在竞态）。
         """
-        # 新一轮检查开始：清掉总览右键设置的手动已完成/未完成，让真实结果接管
-        # （「已修复」标记是持久化的，不在这里清）
-        clear_manual_states(self.cfg)
+        # 新一轮检查开始：清掉昨天的首页记号（已修复 / 手动状态），今天的保留
+        expire_marks(self.cfg)
         total = len(games)
         failed: List[str] = []
         success: List[str] = []
@@ -1614,8 +1809,9 @@ class Engine:
             if on_progress:
                 on_progress(i + 1, total, it.name)
             (success if it.daily == "done" else failed).append(it.name)
-            # 存疑初筛：仅 My-maawork 下的程序参与，按各自阈值；关掉开关后完全不判
+            # 存疑初筛：扫描目录内的程序参与，按各自阈值；总开关或分项开关关了就不判
             if (log_threshold_check_enabled(self.cfg) and it.is_maawork
+                    and threshold_check_enabled(self.cfg, it.name)
                     and it.log_size > it.threshold_mb * 1024 * 1024):
                 suspicious[it.name] = it.log_size
 
