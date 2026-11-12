@@ -111,7 +111,7 @@ DailyChecker.exe --check --notify --quit-after --hidden
 
 | 路径（相对程序根目录） | 内容 |
 | --- | --- |
-| `config/config.json` | 全部设置、规则库、游戏绑定、手动状态。**含钉钉凭证，已加入 `.gitignore`，不要提交** |
+| `config/config.json` | 全部设置、规则库、游戏绑定、手动状态。 |
 | `error_detect_state.json` | 异常监控状态与连续无错天数（原子写入，带 `.tmp` 过渡） |
 | `DailyCheck.txt` | 最近一次日常检查的日报 |
 | `crash.log` | Qt 事件循环异常的兜底日志 |
