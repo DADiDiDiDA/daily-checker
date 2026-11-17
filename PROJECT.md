@@ -164,3 +164,4 @@ python app.py --check            # 命令行跑一轮，不发通知
 5. 首页统计、关注列表、托盘角标、侧栏数字是否仍统一走 `home_attention_visible()` / `effective_failed()`？
 6. 离屏构建 `MainWindow` 冒烟通过了吗？`_save_cfg` 打桩了吗？
 7. onerror 开关的判定是否统一走 `game_error_check_enabled()`（总开关 AND 每行开关）？`scan_errors()` 过滤是否放在 `_resolve_game_name()` 之后？设置页是否不再重复放 `err_toggle`？
+8. 工具栏新增控件后，是否在真实窗口宽度（约 950px）下截图确认不重叠？`GameListView` 顶部拆成「分类行 + 工具行」两个 H 布局，别再往同一行塞超过 6 个控件。

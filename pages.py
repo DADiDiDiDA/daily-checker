@@ -117,6 +117,8 @@ class GameListView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(10)
 
+        # 分类一行、工具一行：六个 chip + 两个下拉 + 搜索 + onerror 全塞一行时，
+        # 窄窗口下搜索框被压到只剩几十像素，placeholder 和 onerror 标签会叠在一起。
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.chips: dict[str, Chip] = {}
@@ -127,24 +129,27 @@ class GameListView(QWidget):
             self.chips[key] = chip
             bar.addWidget(chip)
         bar.addStretch(1)
+        outer.addLayout(bar)
+
+        tools = QHBoxLayout()
+        tools.setSpacing(8)
         self.cfg = core.load_config()
         self.sort_combo = ThemedCombo([(k, t) for k, t in core.SORT_MODES_BASIC],
                                       core.get_sort_mode(self.cfg), 116)
         self.sort_combo.changed.connect(self._on_sort_changed)
         self.sort_combo.setToolTip("常规排序：默认顺序 / 按名称 / 无错天数 / 日志大小")
-        bar.addWidget(self.sort_combo)
+        tools.addWidget(self.sort_combo)
         self.special_combo = ThemedCombo([(k, t) for k, t in core.SORT_MODES_SPECIAL],
                                          core.get_sort_special(self.cfg), 108)
         self.special_combo.changed.connect(self._on_sort_changed)
         self.special_combo.setToolTip(
             "特殊排序：启用时覆盖常规排序；「手动拖拽」下可按住行拖动调整顺序")
-        bar.addWidget(self.special_combo)
+        tools.addWidget(self.special_combo)
         self.search = SearchBox("搜索游戏…")
-        # 不设固定宽度：窄窗口下让搜索框先缩，避免把后面的 onerror 开关挤重叠
-        self.search.setMinimumWidth(110)
+        self.search.setMinimumWidth(140)
         self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search.textChanged.connect(self._on_search)
-        bar.addWidget(self.search, 1)
+        tools.addWidget(self.search, 1)
 
         # onerror 检查总开关：从设置页搬来，和每行的小开关是「与」关系
         err_box = QWidget()
@@ -159,8 +164,8 @@ class GameListView(QWidget):
         self.onerror_all.toggled.connect(self._on_onerror_all)
         err_lay.addWidget(_label("onerror", 11, "text_muted"))
         err_lay.addWidget(self.onerror_all, 0, Qt.AlignVCenter)
-        bar.addWidget(err_box, 0, Qt.AlignRight)
-        outer.addLayout(bar)
+        tools.addWidget(err_box, 0, Qt.AlignRight)
+        outer.addLayout(tools)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
