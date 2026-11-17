@@ -151,6 +151,7 @@ python app.py --check            # 命令行跑一轮，不发通知
 ```
 
 - 打包产物在 `dist/`；`.gitignore` 排除 `config/`、`_test/`、`build/`、`dist/`、`*.log`、状态文件与开发截图。
+- onerror 检查：`check.error_check`（游戏列表页顶部总开关）与 `check.error_check_map{游戏名: bool}`（每行行尾开关）是**与**关系，`core.game_error_check_enabled()` 是唯一判定入口；`Engine.scan_errors()` 在目录树命中后、`_resolve_game_name()` 之后按该判定过滤，关掉的游戏既不进 `found` 也不挂 `Game.error_flags`。总开关从设置页搬到 `GameListView`，设置页不再有 `err_toggle`；切换时主窗口即时清/重扫异常徽章，无错天数仍是下一轮 `run_check()` 统一算。
 - 验证脚本放在 `_test/`（不入库），惯例按版本命名 `verify_dc_v<版本>.py`；核心逻辑改动后优先补纯 Python 断言，UI 改动再补离屏冒烟。
 - 提交前确认：`config/config.json` 没被带上、没有真实凭证、版本号与 `core.APP_VERSION` 一致。
 
@@ -162,3 +163,4 @@ python app.py --check            # 命令行跑一轮，不发通知
 4. 配置新增键是否同时补进 `load_config()` 的默认值，旧配置能否浅合并兼容？
 5. 首页统计、关注列表、托盘角标、侧栏数字是否仍统一走 `home_attention_visible()` / `effective_failed()`？
 6. 离屏构建 `MainWindow` 冒烟通过了吗？`_save_cfg` 打桩了吗？
+7. onerror 开关的判定是否统一走 `game_error_check_enabled()`（总开关 AND 每行开关）？`scan_errors()` 过滤是否放在 `_resolve_game_name()` 之后？设置页是否不再重复放 `err_toggle`？

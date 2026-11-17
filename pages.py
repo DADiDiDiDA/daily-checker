@@ -92,6 +92,8 @@ class GameListView(QWidget):
     row_threshold = Signal(str)
     row_method = Signal(str)
     row_exclude = Signal(str)
+    row_onerror = Signal(str, bool)   # 单独开关某款游戏的 onerror 检查
+    onerror_all_changed = Signal(bool)  # 顶部总开关
     sort_changed = Signal(str, str)   # (常规排序, 特殊排序)
     order_changed = Signal(list)   # 手动拖拽后的新顺序（游戏名列表）
 
@@ -138,9 +140,26 @@ class GameListView(QWidget):
             "特殊排序：启用时覆盖常规排序；「手动拖拽」下可按住行拖动调整顺序")
         bar.addWidget(self.special_combo)
         self.search = SearchBox("搜索游戏…")
-        self.search.setFixedWidth(184)
+        # 不设固定宽度：窄窗口下让搜索框先缩，避免把后面的 onerror 开关挤重叠
+        self.search.setMinimumWidth(110)
+        self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search.textChanged.connect(self._on_search)
-        bar.addWidget(self.search)
+        bar.addWidget(self.search, 1)
+
+        # onerror 检查总开关：从设置页搬来，和每行的小开关是「与」关系
+        err_box = QWidget()
+        err_lay = QHBoxLayout(err_box)
+        err_lay.setContentsMargins(0, 0, 0, 0)
+        err_lay.setSpacing(5)
+        self.onerror_all = ToggleSwitch(core.error_check_enabled(self.cfg))
+        self.onerror_all.setFixedSize(34, 19)
+        self.onerror_all.setToolTip(
+            "总开关关闭后，所有游戏的 on_error / screencap 检查都跳过；"
+            "每行的小开关只影响该游戏")
+        self.onerror_all.toggled.connect(self._on_onerror_all)
+        err_lay.addWidget(_label("onerror", 11, "text_muted"))
+        err_lay.addWidget(self.onerror_all, 0, Qt.AlignVCenter)
+        bar.addWidget(err_box, 0, Qt.AlignRight)
         outer.addLayout(bar)
 
         self.scroll = QScrollArea()
@@ -179,19 +198,34 @@ class GameListView(QWidget):
             self.list_lay.removeWidget(row)
             row.deleteLater()
         self.rows.clear()
+        self.onerror_all.blockSignals(True)
+        self.onerror_all.setChecked(core.error_check_enabled(self.cfg))
+        self.onerror_all.blockSignals(False)
         for it in self._sorted_items:
             row = GameRow(it)
+            row.set_onerror_enabled(core.game_error_check_enabled(self.cfg, it.name))
             row.open_requested.connect(self.row_open)
             row.log_requested.connect(self.row_log)
             row.debug_requested.connect(self.row_debug)
             row.threshold_requested.connect(self.row_threshold)
             row.method_requested.connect(self.row_method)
             row.exclude_requested.connect(self.row_exclude)
+            row.onerror_requested.connect(self.row_onerror)
             row.dropped_on.connect(self._on_drop)
             self.rows[it.key] = row
             self.list_lay.insertWidget(self.list_lay.count() - 1, row)
         self._update_counts()
         self.apply_filter()
+
+    def _on_onerror_all(self, on: bool) -> None:
+        # 总开关由主窗口落盘；这里按「新总开关 AND 各行自己的设置」刷新显示，
+        # 注意 cfg 还是旧值，不能直接调 game_error_check_enabled（它内含旧总开关）。
+        own = (self.cfg.get("check") or {}).get("error_check_map") or {}
+        for key, row in self.rows.items():
+            it = next((x for x in self.items if x.key == key), None)
+            row_on = bool(own.get(it.name, True)) if it else True
+            row.set_onerror_enabled(bool(on) and row_on)
+        self.onerror_all_changed.emit(on)
 
     # ---------- 排序与拖拽 ----------
     def _effective_mode(self) -> str:
@@ -354,6 +388,8 @@ class GamesPage(QWidget):
     row_threshold = Signal(str)
     row_method = Signal(str)
     row_exclude = Signal(str)
+    row_onerror = Signal(str, bool)
+    onerror_all_changed = Signal(bool)
     sort_changed = Signal(str, str)
     order_changed = Signal(list)
 
@@ -369,6 +405,8 @@ class GamesPage(QWidget):
         self.list.row_threshold.connect(self.row_threshold)
         self.list.row_method.connect(self.row_method)
         self.list.row_exclude.connect(self.row_exclude)
+        self.list.row_onerror.connect(self.row_onerror)
+        self.list.onerror_all_changed.connect(self.onerror_all_changed)
         self.list.sort_changed.connect(self.sort_changed)
         self.list.order_changed.connect(self.order_changed)
         lay.addWidget(self.list, 1)
@@ -2530,12 +2568,8 @@ class SettingsPage(QWidget):
                   "状态文件保留，重新开启可接着算",
                   self.streak_toggle)
 
-        self.err_toggle = ToggleSwitch(core.error_check_enabled(self.cfg))
-        self.err_toggle.toggled.connect(self._save_check)
-        self._row(lay, "check", "检测 on_error / screencap 文件夹",
-                  "开启后扫描设置的扫描目录树（在「扫描目录」里配置），发现异常文件夹即标记对应游戏并清零无错天数；"
-                  "关闭后跳过文件夹异常检测（日常失败仍会清零）",
-                  self.err_toggle)
+        # on_error 检查的总开关已搬到「游戏」列表页顶部，可按游戏单独再关：
+        # 见 GameListView.onerror_all 与 GameRow.onerror_toggle。
 
         # 「启用日志阈值检查」与「默认日志阈值」已搬到「判定规则 · 程序检查规则」页，
         # 和每行自己的阈值放在一起；设置页不再重复。
@@ -2562,9 +2596,6 @@ class SettingsPage(QWidget):
 
     def refresh_check(self) -> None:
         """右键改了排除名单等之后，刷新设置页显示。"""
-        self.err_toggle.blockSignals(True)
-        self.err_toggle.setChecked(core.error_check_enabled(self.cfg))
-        self.err_toggle.blockSignals(False)
         self.streak_toggle.blockSignals(True)
         self.streak_toggle.setChecked(core.streak_check_enabled(self.cfg))
         self.streak_toggle.blockSignals(False)
@@ -2578,7 +2609,6 @@ class SettingsPage(QWidget):
 
     def _save_check(self, *_):
         ck = self.cfg.setdefault("check", {})
-        ck["error_check"] = self.err_toggle.isChecked()
         ck["streak_check"] = self.streak_toggle.isChecked()
         self.config_changed.emit()
 

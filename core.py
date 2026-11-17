@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.9"
+APP_VERSION = "1.7.10"
 
 # ==================== 监控配置 ====================
 
@@ -670,6 +670,9 @@ def load_config() -> dict:
                   "custom_games": [],
                   "default_method": DEFAULT_METHOD,
                   "error_check": True,
+                  # 按游戏单独开关 onerror 检查：游戏名 → 是否检查（缺省 = 检查）。
+                  # 与总开关 error_check 是「与」关系：任一关掉就不扫该游戏。
+                  "error_check_map": {},
                   "log_threshold_check": True,   # 是否启用日志体积阈值（存疑）检查
                   "streak_check": True,          # 是否统计 / 展示无错天数
                   "log_folder_check": True,      # 是否启用根目录日志文件夹判定
@@ -1201,7 +1204,34 @@ def get_target_folders(cfg: dict) -> List[str]:
 
 
 def error_check_enabled(cfg: dict) -> bool:
+    """onerror 检查总开关（游戏列表页顶部）。"""
     return bool((cfg.get("check") or {}).get("error_check", True))
+
+
+def game_error_check_enabled(cfg: dict, name: str) -> bool:
+    """某款游戏是否启用 onerror 检查：总开关 AND 该游戏的单独开关。
+
+    单独开关缺省视为开启（老配置没有 error_check_map 时行为完全不变）。
+    """
+    if not error_check_enabled(cfg):
+        return False
+    raw = (cfg.get("check") or {}).get("error_check_map") or {}
+    if isinstance(raw, dict) and name in raw:
+        return bool(raw[name])
+    return True
+
+
+def set_game_error_check(cfg: dict, name: str, enabled: bool) -> None:
+    """设置某款游戏的 onerror 开关；开启时删掉覆盖项回到「跟随总开关」。"""
+    ck = cfg.setdefault("check", {})
+    m = ck.get("error_check_map")
+    if not isinstance(m, dict):
+        m = {}
+        ck["error_check_map"] = m
+    if enabled:
+        m.pop(name, None)
+    else:
+        m[name] = False
 
 
 def log_threshold_check_enabled(cfg: dict) -> bool:
@@ -1777,6 +1807,9 @@ class Engine:
             return found
         folder_map = get_folder_map(self.cfg)
         by_name = {g.name: g for g in games}
+        # 按游戏单独关掉的：目录扫到了也不写进统计 / 不挂异常徽章 / 不清无错天数
+        disabled = {g.name for g in games
+                    if not game_error_check_enabled(self.cfg, g.name)}
         excludes = get_scan_excludes(self.cfg)
         roots = [d for d in get_scan_dirs(self.cfg) if os.path.isdir(d)]
         for root in roots:
@@ -1792,8 +1825,9 @@ class Engine:
                 if not hits:
                     continue
                 display = self._resolve_game_name(dirpath, folder_map, by_name)
-                if not display or display in set(get_excluded(self.cfg)):
-                    continue                    # 认不出是哪款游戏 / 被排除，都不写进统计
+                if (not display or display in set(get_excluded(self.cfg))
+                        or display in disabled):
+                    continue                    # 认不出 / 被排除 / 单独关掉 onerror 的，都不写进统计
                 bucket = found.setdefault(display, set())
                 for t in hits:
                     bucket.add(t)

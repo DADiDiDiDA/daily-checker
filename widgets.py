@@ -825,6 +825,7 @@ class GameRow(QFrame):
     threshold_requested = Signal(str)   # 设置日志阈值
     method_requested = Signal(str)      # 设置日常判断方式
     exclude_requested = Signal(str)     # 排除 / 取消排除
+    onerror_requested = Signal(str, bool)  # 单独启用/关闭这款游戏的 onerror 检查
     copy_requested = Signal(str)        # 复制日志路径
     dropped_on = Signal(str, str, bool) # (拖拽的游戏名, 目标游戏名, 是否插到前面)
 
@@ -905,17 +906,34 @@ class GameRow(QFrame):
         self.log_btn.clicked.connect(
             lambda: self.log_requested.emit(self.item.key))
 
+        # 行尾：单独关闭这款游戏的 onerror 检查（总开关关时这里仍显示各自状态）
+        self.onerror_toggle = ToggleSwitch(True)
+        self.onerror_toggle.setFixedSize(34, 19)
+        self.onerror_toggle.setCursor(Qt.PointingHandCursor)
+        self.onerror_toggle.setToolTip(
+            "单独关闭这款游戏的 on_error / screencap 检查；"
+            "关闭后即使扫到异常也不标记、不影响无错天数")
+        self.onerror_toggle.toggled.connect(
+            lambda on: self.onerror_requested.emit(self.item.key, on))
+
         lay.addWidget(self.avatar)
         lay.addLayout(mid, 1)
         lay.addWidget(self.size_lbl)
         lay.addWidget(self.dir_btn)
         lay.addWidget(self.log_btn)
+        lay.addWidget(self.onerror_toggle, 0, Qt.AlignVCenter)
         self.refresh()
 
     # ---------- 状态刷新 ----------
     def set_item(self, item) -> None:
         self.item = item
         self.refresh()
+
+    def set_onerror_enabled(self, on: bool) -> None:
+        """外部（总开关）同步显示用，不触发信号。"""
+        self.onerror_toggle.blockSignals(True)
+        self.onerror_toggle.setChecked(bool(on))
+        self.onerror_toggle.blockSignals(False)
 
     def refresh(self) -> None:
         p = THEME.p

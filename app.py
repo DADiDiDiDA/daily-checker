@@ -469,6 +469,8 @@ class MainWindow(QWidget):
         self.page_games.row_threshold.connect(self.edit_threshold)
         self.page_games.row_method.connect(self.edit_method)
         self.page_games.row_exclude.connect(self.toggle_exclude)
+        self.page_games.row_onerror.connect(self.toggle_game_onerror)
+        self.page_games.onerror_all_changed.connect(self.toggle_onerror_all)
         self.page_games.sort_changed.connect(self.on_sort_changed)
         self.page_games.order_changed.connect(self.on_order_changed)
 
@@ -1366,6 +1368,37 @@ class MainWindow(QWidget):
         self._update_brand()
         if hasattr(self, "page_settings"):
             self.page_settings.refresh_check()
+
+    def toggle_game_onerror(self, key: str, on: bool) -> None:
+        """游戏行的小开关：只改这款游戏的 onerror 检查，不影响总开关。"""
+        it = next((i for i in self.games if i.key == key), None)
+        if not it:
+            return
+        core.set_game_error_check(self.cfg, it.name, bool(on))
+        self._save_cfg()
+        # 只即时刷新异常徽章；无错天数属于「一轮检查」的统计，下一轮按新开关自然生效
+        it.error_flags.clear()
+        if on and core.error_check_enabled(self.cfg) and core.get_target_folders(self.cfg):
+            self.engine.scan_errors([it])
+        self._refresh_game_row(it)
+        self.page_home.refresh_stats()
+        self.toast.show_text(
+            f"「{it.name}」onerror 检查已{'开启' if on else '关闭'}"
+            + ("" if core.error_check_enabled(self.cfg) else "（总开关当前为关）"))
+
+    def toggle_onerror_all(self, on: bool) -> None:
+        """游戏列表顶部总开关：一行改动，所有游戏的 onerror 检查一起开关。"""
+        self.cfg.setdefault("check", {})["error_check"] = bool(on)
+        self._save_cfg()
+        for it in self.games:
+            it.error_flags.clear()       # 先全部清掉，再按新开关重扫
+            self._refresh_game_row(it)
+        if on and core.get_target_folders(self.cfg):
+            self.engine.scan_errors(self.games)   # 会重新给每行的 it.error_flags 挂上
+            for it in self.games:
+                self._refresh_game_row(it)
+        self.page_home.refresh_stats()
+        self.toast.show_text("onerror 总开关已" + ("开启" if on else "关闭"))
 
     def manage_excludes(self) -> None:
         """设置页「排除的游戏 · 管理」：勾选名单批量调整。"""
