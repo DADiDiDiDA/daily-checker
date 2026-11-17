@@ -8,7 +8,7 @@
 | --- | --- |
 | 平台 | Windows 10 / 11 |
 | 技术栈 | Python 3 · PySide6 · PyInstaller（单文件 exe，便携免安装） |
-| 当前版本 | **v1.7.11** |
+| 当前版本 | **v1.7.12** |
 | 仓库 | [DADiDiDiDA/daily-checker](https://github.com/DADiDiDiDA/daily-checker) |
 
 ## 先看这一句：它检查的不是游戏日志
@@ -97,7 +97,7 @@
 | --- | --- |
 | `--check` | 启动后立即检查一轮（不自动发通知） |
 | `--notify` | 检查后发送通知（配合 `--check`） |
-| `--quit-after` | 检查 / 通知完成后自动退出（配合计划任务） |
+| `--quit-after` | 检查 / 通知完成后必定退出（配合计划任务；转发给常驻实例也生效） |
 | `--hidden` / `--tray` / `--silent` / `--background` / `-t` | 后台静默启动，不显示主窗口 |
 | `--show` | 把已运行实例的主窗口叫到前台（优先于 `--hidden`） |
 | `--help` / `-h` | 打印参数说明 |
@@ -107,7 +107,7 @@ DailyChecker.exe --check --notify --quit-after --hidden
 DailyChecker.exe --show
 ```
 
-常驻托盘时再次带参数启动，参数会转交给已运行的实例；`--quit-after` 只影响本次，不会把常驻实例退掉。与姊妹项目 AutomateUpdater 的常用指令保持一致。
+常驻托盘时再次带 `--check` / `--notify` 启动，参数会转交给已运行的实例；触发进程会等那一轮检查+通知全部完成、收到回执后才退出，方便脚本链用「进程退出」判断这步跑完。带 `--quit-after` 时强制生效，常驻实例完成后也会退出（v1.7.12 起）。与姊妹项目 AutomateUpdater 的常用指令保持一致。
 
 ## 文件与配置
 

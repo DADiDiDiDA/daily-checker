@@ -136,8 +136,9 @@ app.py  ──>  pages.py  ──>  widgets.py ──> theme.py
 - 截图前把 `core.APP_ID` 改成带 `.shot` 的值避免撞单实例；先 `THEME.set_mode("light")` + `refresh()` 再构造窗口（否则浅底配深字像没渲染）；离屏中文变方块时改用真实 `windows` 平台。
 
 **业务与数据**
-- 单实例 IPC 消息为 `{show, hidden, cli}`，二次启动的参数必须转交给已运行实例；退出统一走 `_shutdown()`，先取消并等待所有 worker。
-- **CLI（v1.7.9）**：`--check` / `--notify` / `--quit-after` / `--hidden`（别名 `--tray`/`--silent`/`--background`/`-t`）/ `--show` / `--help`。`--show` 只叫出窗口且优先于 hidden；转发给常驻实例时必须去掉 `quit_after`，否则计划任务会把常驻托盘退掉。
+- 单实例 IPC 消息为 `{show, hidden, cli, req_id, wait}`（v1.7.12 加后两个）；二次启动的参数必须转交给已运行实例；退出统一走 `_shutdown()`，先取消并等待所有 worker。
+- **CLI（v1.7.9；v1.7.12 改强制退出）**：`--check` / `--notify` / `--quit-after` / `--hidden`（别名 `--tray`/`--silent`/`--background`/`-t`）/ `--show` / `--help`。`--show` 只叫出窗口且优先于 hidden。**`quit_after` 现在强制生效**：转发给常驻实例时也保留，常驻实例完成那轮后退出；带 `--check`/`--notify` 的触发进程登记到 `win._cli_waiters`，在 `_complete_cli_round()` 回执 `{done,req_id}` 后才返回，让调用方用「进程退出」判断这步完成（旧版是秒退 + 剥掉 quit_after，链条会抢跑）。
+- **推送模板（v1.7.12）**：`dingtalk.templates` 存四条正文模板；`get_notify_templates`/`set_notify_template` 读写，`render_notify_template` 按 `{占位符}` 替换动态清单。`Engine._render_notify()` 在模板与内置相同时直接返回内置文案，保证旧配置逐字不变；设置页 `NotifyTemplateDialog` 是二级窗口。
 - 开机自启值名固定 `DailyChecker`；默认配置**不得**内置任何真实钉钉凭证。
 - 规则页排序（`check.rules_sort` + `rules_unbound_first`）由 `MainWindow` 注入 `scan_items_provider=lambda: self.games`；改排序只调行顺序（`removeWidget` / `insertWidget`），**不重建行控件**。
 - 规则库内置条目不允许删除（在用时）；`default_rule` 同时只有一条。

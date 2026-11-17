@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.11"
+APP_VERSION = "1.7.12"
 
 # ==================== 监控配置 ====================
 
@@ -74,6 +74,76 @@ DEFAULT_DING = {
     "webhook": "",
     "secret": "",
 }
+
+# ---------------------------------------------------------------- 推送模板
+# 四条通知正文可在设置页「编辑推送信息」里自定义。模板用 {占位符} 插入动态清单，
+# 未设置 / 与默认相同时走内置文案，保证旧配置升级后推送内容不变。
+NOTIFY_TEMPLATE_KEYS = ("error", "suspicious", "daily", "summary")
+
+NOTIFY_TEMPLATE_INFO = {
+    "error": {
+        "label": "异常监控",
+        "placeholders": (("异常", "异常游戏清单或无异常提示"),
+                         ("无错天数", "无错天数清单（为空则不显示）")),
+        "default": "{异常}{无错天数}",
+    },
+    "suspicious": {
+        "label": "存疑提醒",
+        "placeholders": (("存疑", "存疑游戏清单或无存疑提示"),),
+        "default": "{存疑}",
+    },
+    "daily": {
+        "label": "日常检测",
+        "placeholders": (("失败", "未完成清单（全完成时为空）"),
+                         ("成功", "已完成清单")),
+        "default": "{失败}{成功}",
+    },
+    "summary": {
+        "label": "日常汇总",
+        "placeholders": (("异常", "文件夹异常清单"),
+                         ("日常", "日常未完成清单"),
+                         ("存疑", "存疑清单")),
+        "default": "{异常}\n{日常}\n{存疑}",
+    },
+}
+DEFAULT_NOTIFY_TEMPLATES = {
+    k: v["default"] for k, v in NOTIFY_TEMPLATE_INFO.items()
+}
+
+
+def get_notify_templates(cfg: dict) -> dict:
+    """返回四条通知模板；缺省项用内置文案补齐。"""
+    raw = (cfg.get("dingtalk") or {}).get("templates")
+    out = dict(DEFAULT_NOTIFY_TEMPLATES)
+    if isinstance(raw, dict):
+        for k in NOTIFY_TEMPLATE_KEYS:
+            v = raw.get(k)
+            if isinstance(v, str) and v.strip():
+                out[k] = v
+    return out
+
+
+def set_notify_template(cfg: dict, key: str, text: str) -> None:
+    """写入单条模板；空串或与内置相同则移除覆盖（回到默认）。"""
+    if key not in NOTIFY_TEMPLATE_KEYS:
+        return
+    ding = cfg.setdefault("dingtalk", {})
+    tpl = ding.setdefault("templates", {})
+    text = (text or "").strip()
+    if text and text != DEFAULT_NOTIFY_TEMPLATES[key]:
+        tpl[key] = text
+    else:
+        tpl.pop(key, None)
+    if not tpl:
+        ding.pop("templates", None)
+
+
+def render_notify_template(template: str, mapping: dict) -> str:
+    """把 {占位符} 换成动态清单；未知占位符原样保留，方便用户发现写错。"""
+    out = template or ""
+    for k, v in mapping.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
 
 
 @dataclass
@@ -2045,15 +2115,69 @@ class Engine:
             lines.append("✅ 无存疑")
         return "\n".join(lines)
 
+    # ---------- 自定义推送模板用的动态清单 ----------
+    def _error_fragments(self, result: dict) -> dict:
+        msg = self.build_error_message(result)
+        # 拆成「异常清单」与「无错天数」两段（保持默认文案时整段即 {异常}）
+        if "\n无错天数：\n" in msg:
+            head, tail = msg.split("\n无错天数：\n", 1)
+            return {"异常": head, "无错天数": "无错天数：\n" + tail}
+        return {"异常": msg, "无错天数": ""}
+
+    def _suspicious_fragments(self, result: dict) -> dict:
+        return {"存疑": self.build_suspicious_message(result["suspicious"])}
+
+    def _daily_fragments(self, result: dict) -> dict:
+        success = self.sort_by_order(result["success"])
+        failed = self.sort_by_order(result["failed"])
+        if not failed:
+            return {"失败": "", "成功": self.build_daily_message(success, failed)}
+        head = f"❌ 失败游戏 {len(failed)} 个："
+        fail_block = "\n".join([head] + [f"  ✗ {g}" for g in failed])
+        if success:
+            ok_block = ("✅ 成功游戏 %d 个：" % len(success) + "\n" +
+                        "\n".join(f"  ✓ {g}" for g in success))
+        else:
+            ok_block = ""
+        return {"失败": fail_block, "成功": ok_block}
+
+    def _summary_fragments(self, result: dict) -> dict:
+        folder_errors = list(result["folder_errors"].keys())
+        # 复用内置文案的结构，再按空行切成三块
+        msg = self.build_summary_message(result["failed"], folder_errors,
+                                         result["suspicious"])
+        blocks = msg.split("\n\n")
+        blocks += [""] * (3 - len(blocks))
+        return {"异常": blocks[0], "日常": blocks[1], "存疑": blocks[2]}
+
+    def _render_notify(self, key: str, fragments: dict, builtin: str) -> str:
+        tpls = get_notify_templates(self.cfg)
+        tpl = tpls.get(key, DEFAULT_NOTIFY_TEMPLATES.get(key, ""))
+        if not tpl or tpl == DEFAULT_NOTIFY_TEMPLATES.get(key):
+            return builtin                      # 未自定义：完全保持旧行为
+        return render_notify_template(tpl, fragments)
+
     def build_all_messages(self, result: dict) -> List[Tuple[str, str]]:
-        """四条钉钉通知：异常监控 / 存疑提醒 / 日常检测 / 日常汇总。"""
+        """四条钉钉通知：异常监控 / 存疑提醒 / 日常检测 / 日常汇总。
+
+        设置页自定义模板只替换正文结构，动态清单仍由内置逻辑生成，避免用户
+        改坏数据；未自定义的四条与旧版逐字一致。
+        """
         return [
-            ("异常监控", self.build_error_message(result)),
-            ("存疑提醒", self.build_suspicious_message(result["suspicious"])),
-            ("日常检测", self.build_daily_message(result["success"], result["failed"])),
-            ("日常汇总", self.build_summary_message(result["failed"],
-                                                    list(result["folder_errors"].keys()),
-                                                    result["suspicious"])),
+            ("异常监控", self._render_notify(
+                "error", self._error_fragments(result),
+                self.build_error_message(result))),
+            ("存疑提醒", self._render_notify(
+                "suspicious", self._suspicious_fragments(result),
+                self.build_suspicious_message(result["suspicious"]))),
+            ("日常检测", self._render_notify(
+                "daily", self._daily_fragments(result),
+                self.build_daily_message(result["success"], result["failed"]))),
+            ("日常汇总", self._render_notify(
+                "summary", self._summary_fragments(result),
+                self.build_summary_message(result["failed"],
+                                           list(result["folder_errors"].keys()),
+                                           result["suspicious"]))),
         ]
 
     # ---------- 钉钉 ----------

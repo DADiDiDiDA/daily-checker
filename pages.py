@@ -2256,6 +2256,50 @@ class NotifyPreviewDialog(ThemedDialog):
         self.add_footer(ok_text="发送")
 
 
+class NotifyTemplateDialog(ThemedDialog):
+    """编辑四条钉钉通知的正文模板（二级窗口，由设置页打开）。"""
+
+    def __init__(self, parent, cfg: dict):
+        super().__init__(parent, "编辑推送信息", 640)
+        tp = THEME.p
+        self.body.addWidget(_label(
+            "用 {占位符} 插入动态清单；留空即恢复内置文案。改完点保存，下次推送生效。",
+            11, "text_muted", wrap=True))
+
+        self._edits: dict[str, QPlainTextEdit] = {}
+        tpls = core.get_notify_templates(cfg)
+        for key in core.NOTIFY_TEMPLATE_KEYS:
+            info = core.NOTIFY_TEMPLATE_INFO[key]
+            holders = "、".join("{" + name + "}" for name, _ in info["placeholders"])
+            self.body.addWidget(_label(f"{info['label']}　·　可用：{holders}",
+                                       12, "text", bold=True))
+            hint = "；".join(f"{name}：{desc}" for name, desc in info["placeholders"])
+            self.body.addWidget(_label(hint, 10, "text_muted", wrap=True))
+            edit = QPlainTextEdit()
+            edit.setFixedHeight(76)
+            edit.setStyleSheet(
+                f"QPlainTextEdit{{background:{rgba(tp.text, 0.05 if tp.dark else 0.04)};"
+                f"border:1px solid {rgba(tp.border, 0.14)};border-radius:10px;color:{tp.text};"
+                f"font-family:'Microsoft YaHei UI';font-size:12px;padding:6px 10px;}}")
+            edit.setPlainText(tpls.get(key, ""))
+            self.body.addWidget(edit)
+            self._edits[key] = edit
+
+        reset = QPushButton("全部恢复默认")
+        reset.setObjectName("ghost")
+        reset.setCursor(Qt.PointingHandCursor)
+        reset.setFixedHeight(32)
+        reset.clicked.connect(self._reset_defaults)
+        self.add_footer(extra=reset)
+
+    def _reset_defaults(self) -> None:
+        for key, edit in self._edits.items():
+            edit.setPlainText(core.DEFAULT_NOTIFY_TEMPLATES[key])
+
+    def values(self) -> dict:
+        return {k: e.toPlainText().strip() for k, e in self._edits.items()}
+
+
 # ---------------------------------------------------------------- 设置页
 
 class SettingsPage(QWidget):
@@ -2265,6 +2309,7 @@ class SettingsPage(QWidget):
     config_changed = Signal()
     autostart_requested = Signal(bool)
     test_ding_requested = Signal()
+    templates_requested = Signal()
     exclude_manage_requested = Signal()
     scan_dir_manage_requested = Signal()
 
@@ -2522,7 +2567,16 @@ class SettingsPage(QWidget):
         self.test_row = self._row(lay, "rocket", "连通性测试",
                                   "发一条测试消息验证配置", test_btn, self.test_lbl)
 
-        self._ding_rows = (self.webhook_row, self.secret_row, self.test_row)
+        tpl_btn = QPushButton("编辑推送信息")
+        tpl_btn.setObjectName("soft")
+        tpl_btn.setCursor(Qt.PointingHandCursor)
+        tpl_btn.setFixedHeight(30)
+        tpl_btn.clicked.connect(self.templates_requested.emit)
+        self.tpl_row = self._row(
+            lay, "notify", "推送信息模板",
+            "自定义四条通知的正文，支持 {占位符} 插入动态清单", tpl_btn)
+
+        self._ding_rows = (self.webhook_row, self.secret_row, self.test_row, self.tpl_row)
         self._notify_rows = (self.auto_row,) + self._ding_rows
         self._update_ding_visible()
 

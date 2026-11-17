@@ -23,8 +23,8 @@ import core
 import autostart
 from backdrop import BACKDROP
 from pages import (AddGameDialog, DashboardView, ExcludeDialog, FolderMapDialog, GamesPage,
-                   GameRuleDialog, MethodsPages, NotifyPreviewDialog, RuleDialog, ScanDirDialog,
-                   SettingsPage, ThresholdDialog)
+                   GameRuleDialog, MethodsPages, NotifyPreviewDialog, NotifyTemplateDialog,
+                   RuleDialog, ScanDirDialog, SettingsPage, ThresholdDialog)
 from theme import build_qss, flat, qc, tint, GLYPH, THEME, glyph_font
 from tray import TrayIcon
 from widgets import NavButton, Toast
@@ -272,6 +272,11 @@ class MainWindow(QWidget):
         self._silent_check = start_hidden
         self._quitting = False
         self._cli = cli or {}
+        # --quit-after 强制生效：不管检查/通知走没走单实例转发，一轮完成后必定退出。
+        # _cli_waiters 里是转发指令的触发进程连接，完成后给它们回执，让触发进程
+        # 等到检查+通知都结束再退出（调用方靠「进程退出」判断这步完成）。
+        self._cli_waiters: list = []
+        self._cli_quit_after = bool(self._cli.get("quit_after"))
         self._dragging = False
         self._drag_pos = QPoint()
         self._bg = None
@@ -521,6 +526,7 @@ class MainWindow(QWidget):
         page.config_changed.connect(self._save_cfg)
         page.autostart_requested.connect(self._set_autostart)
         page.test_ding_requested.connect(self._test_ding)
+        page.templates_requested.connect(self.edit_templates)
         page.exclude_manage_requested.connect(self.manage_excludes)
         page.scan_dir_manage_requested.connect(self.manage_scan_dirs)
 
@@ -822,6 +828,26 @@ class MainWindow(QWidget):
     def quit_app(self) -> None:
         self._shutdown()
 
+    def _complete_cli_round(self) -> None:
+        """一轮带 --quit-after 的检查/通知真正结束：回执触发进程后必定退出。
+
+        检查完成但没发通知、或通知 worker 发完，都走这里；单实例转发的触发
+        进程收到回执才退出，调用方据此判断「这步跑完了」再往下走。
+        """
+        for sock, req_id in getattr(self, "_cli_waiters", []):
+            try:
+                sock.write(json.dumps(
+                    {"done": True, "req_id": req_id}, ensure_ascii=False
+                ).encode("utf-8"))
+                sock.flush()
+                sock.waitForBytesWritten(500)
+            except Exception:
+                pass
+        self._cli_waiters = []
+        if getattr(self, "_cli_quit_after", False) and not self._quitting:
+            self._cli_quit_after = False
+            QTimer.singleShot(300, self.quit_app)
+
     # ---------- 数据与检查 ----------
     def _attention_count(self) -> int:
         # 和首页同一口径：已排除 / 强制已完成的不计入；
@@ -892,11 +918,13 @@ class MainWindow(QWidget):
             self.toast.show_text("检查已停止")
             if self.tray is not None:
                 self.tray.set_busy(False)
+            self._complete_cli_round()
             return
         if result.get("fatal"):
             self.toast.show_text(f"检查出错：{result['fatal']}", ok=False)
             if self.tray is not None:
                 self.tray.set_busy(False)
+            self._complete_cli_round()
             return
 
         self.last_result = result
@@ -943,10 +971,12 @@ class MainWindow(QWidget):
             if "dingtalk" in chans:
                 self._send_notify_worker()
 
-        # --quit-after 对所有模式生效；若有通知 worker 在跑，由 _on_notify_done 收尾退出
-        if cli.get("quit_after") and not (
+        # --quit-after 强制生效：没发通知就在这里收尾；发了通知则等 worker 结束。
+        # 用 _cli_quit_after（而不是本轮 cli）是因为单实例转发时 quit_after
+        # 被从 payload 里剥掉了，必须沿用常驻实例启动时记下的强制退出标记。
+        if getattr(self, "_cli_quit_after", False) and not (
                 self.notify_worker and self.notify_worker.isRunning()):
-            QTimer.singleShot(400, self.quit_app)
+            self._complete_cli_round()
 
     def cancel_tasks(self) -> None:
         self.engine.cancel.set()
@@ -979,6 +1009,12 @@ class MainWindow(QWidget):
         elif "windows" in chans:
             self.toast.show_text("已发送 Windows 系统通知")
 
+    def _cli_send_notify(self) -> None:
+        """CLI 转发过来的纯 --notify：没结果/没渠道也要回执，别让触发进程干等。"""
+        self.send_notify()
+        if not (self.notify_worker and self.notify_worker.isRunning()):
+            self._complete_cli_round()
+
     def _send_notify_worker(self) -> None:
         if not self.last_result:
             return
@@ -1003,8 +1039,8 @@ class MainWindow(QWidget):
         if "windows" in core.get_notify_channels(self.cfg):
             self._notify("日常检查通知已发送",
                          f"{ok}/{total} 条发送成功" + ("" if good else "，部分失败请检查钉钉配置"))
-        if self._cli.get("quit_after"):
-            QTimer.singleShot(400, self.quit_app)
+        # 通知真正发完才回执/退出（转发的触发进程在等这个回执）
+        self._complete_cli_round()
 
     def _test_ding(self) -> None:
         w = getattr(self, "_ding_test_worker", None)
@@ -1023,6 +1059,16 @@ class MainWindow(QWidget):
         if hasattr(self, "page_settings"):
             self.page_settings.set_test_result(ok, info)
         self.toast.show_text("测试消息已发送" if ok else f"发送失败：{info}", ok=ok)
+
+    def edit_templates(self) -> None:
+        """设置页「编辑推送信息」：二级窗口改四条通知正文模板。"""
+        dlg = NotifyTemplateDialog(self, self.cfg)
+        if not dlg.exec():
+            return
+        for key, text in dlg.values().items():
+            core.set_notify_template(self.cfg, key, text)
+        self._save_cfg()
+        self.toast.show_text("推送信息模板已保存")
 
     # ---------- 其它交互 ----------
     def open_game_folder(self, key: str) -> None:
@@ -1635,14 +1681,42 @@ def main() -> int:
     probe.connectToServer(ipc_key)
     if probe.waitForConnected(400):
         # 把命令行参数交给已经在跑的实例，否则 --check/--notify/--quit-after
-        # 在常驻托盘时会被直接丢掉，计划任务等于什么都没做
-        payload = {"show": not start_hidden, "hidden": start_hidden, "cli": cli}
+        # 在常驻托盘时会被直接丢掉，计划任务等于什么都没做。
+        # 带 --check/--notify 时留下的触发进程要等到那轮检查+通知全部结束才退出，
+        # 调用方靠「进程退出」判断这步完成，不能提前返回（后面就是强制重启）。
+        req_id = f"{os.getpid()}-{int(time.time() * 1000)}"
+        want_wait = bool(cli.get("check") or cli.get("notify"))
+        payload = {"show": not start_hidden, "hidden": start_hidden,
+                   "cli": cli, "req_id": req_id, "wait": want_wait}
         try:
             probe.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             probe.flush()
             probe.waitForBytesWritten(400)
         except Exception:
             pass
+        if want_wait:
+            deadline = time.monotonic() + 3600
+            buf = b""
+            while time.monotonic() < deadline:
+                if not probe.waitForReadyRead(1000):
+                    if probe.state() == QLocalSocket.UnconnectedState:
+                        break
+                    continue
+                buf += bytes(probe.readAll())
+                done = False
+                for line in buf.split(b"\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        reply = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if reply.get("done") and reply.get("req_id") == req_id:
+                        done = True
+                        break
+                if done:
+                    break
         probe.disconnectFromServer()
         return 0
 
@@ -1652,15 +1726,23 @@ def main() -> int:
 
     win = MainWindow(start_hidden=start_hidden, cli=cli)
 
-    def _dispatch(payload: dict) -> None:
+    def _dispatch(payload: dict, conn=None) -> None:
         p = payload or {}
         c = dict(p.get("cli") or {})
-        c.pop("quit_after", None)       # 二次实例不能让常驻托盘跟着退出
+        req_id = str(p.get("req_id") or "")
         if c.get("check") or c.get("notify"):
-            # 只对这一轮检查生效，不改变常驻实例自己的 CLI 状态
+            # --quit-after 强制生效：转发来的也照退出，不再保护常驻托盘。
+            # 触发进程在等回执，把它的连接登记下来，一轮完成后由
+            # _complete_cli_round 回执并退出。
+            if c.get("quit_after"):
+                win._cli_quit_after = True
+            if p.get("wait") and conn is not None:
+                win._cli_waiters.append((conn, req_id))
             win._cli_override = c
-            QTimer.singleShot(0, lambda: win.start_check(silent=True)
-                              if c.get("check") else win.send_notify())
+            if c.get("check"):
+                QTimer.singleShot(0, lambda: win.start_check(silent=True))
+            else:
+                QTimer.singleShot(0, win._cli_send_notify)
             return
         if p.get("show") or not p.get("hidden"):
             win.show_main()
@@ -1679,7 +1761,7 @@ def main() -> int:
                 except Exception:
                     return                  # 分包没收齐，等下一次 readyRead
                 st["done"] = True
-                _dispatch(payload)
+                _dispatch(payload, c)
 
             def _on_disconnect(c=conn, st=state):
                 # 兼容旧版只发 b"show" 的客户端
