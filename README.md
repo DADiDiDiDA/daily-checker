@@ -8,7 +8,7 @@
 | --- | --- |
 | 平台 | Windows 10 / 11 |
 | 技术栈 | Python 3 · PySide6 · PyInstaller（单文件 exe，便携免安装） |
-| 当前版本 | **v1.7.8** |
+| 当前版本 | **v1.7.9** |
 | 仓库 | [DADiDiDiDA/daily-checker](https://github.com/DADiDiDiDA/daily-checker) |
 
 ## 先看这一句：它检查的不是游戏日志
@@ -99,13 +99,15 @@
 | `--notify` | 检查后发送通知（配合 `--check`） |
 | `--quit-after` | 检查 / 通知完成后自动退出（配合计划任务） |
 | `--hidden` / `--tray` / `--silent` / `--background` / `-t` | 后台静默启动，不显示主窗口 |
+| `--show` | 把已运行实例的主窗口叫到前台（优先于 `--hidden`） |
 | `--help` / `-h` | 打印参数说明 |
 
 ```powershell
 DailyChecker.exe --check --notify --quit-after --hidden
+DailyChecker.exe --show
 ```
 
-常驻托盘时再次带参数启动，参数会转交给已运行的实例。
+常驻托盘时再次带参数启动，参数会转交给已运行的实例；`--quit-after` 只影响本次，不会把常驻实例退掉。与姊妹项目 AutomateUpdater 的常用指令保持一致。
 
 ## 文件与配置
 

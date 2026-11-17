@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.8"
+APP_VERSION = "1.7.9"
 
 # ==================== 监控配置 ====================
 

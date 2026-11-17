@@ -137,6 +137,7 @@ app.py  ──>  pages.py  ──>  widgets.py ──> theme.py
 
 **业务与数据**
 - 单实例 IPC 消息为 `{show, hidden, cli}`，二次启动的参数必须转交给已运行实例；退出统一走 `_shutdown()`，先取消并等待所有 worker。
+- **CLI（v1.7.9）**：`--check` / `--notify` / `--quit-after` / `--hidden`（别名 `--tray`/`--silent`/`--background`/`-t`）/ `--show` / `--help`。`--show` 只叫出窗口且优先于 hidden；转发给常驻实例时必须去掉 `quit_after`，否则计划任务会把常驻托盘退掉。
 - 开机自启值名固定 `DailyChecker`；默认配置**不得**内置任何真实钉钉凭证。
 - 规则页排序（`check.rules_sort` + `rules_unbound_first`）由 `MainWindow` 注入 `scan_items_provider=lambda: self.games`；改排序只调行顺序（`removeWidget` / `insertWidget`），**不重建行控件**。
 - 规则库内置条目不允许删除（在用时）；`default_rule` 同时只有一条。

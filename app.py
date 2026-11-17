@@ -1555,11 +1555,14 @@ def main() -> int:
               "  --check       启动后立即执行一轮检查\n"
               "  --notify      检查完成后发送钉钉通知（配合 --check）\n"
               "  --quit-after  检查/通知完成后自动退出（配合计划任务）\n"
-              "  --hidden      后台静默启动，不显示主窗口\n"
-              "示例: DailyChecker.exe --check --notify --quit-after --hidden")
+              "  --hidden      后台静默启动，不显示主窗口（别名 --tray / --silent / -t）\n"
+              "  --show        把已运行实例的主窗口叫到前台（优先于 --hidden）\n"
+              "示例: DailyChecker.exe --check --notify --quit-after --hidden\n"
+              "      DailyChecker.exe --show")
         return 0
-    start_hidden = any(a in ("--tray", "--silent", "--background", "--hidden", "-t")
-                       for a in flags)
+    show = "--show" in flags
+    start_hidden = (any(a in ("--tray", "--silent", "--background", "--hidden", "-t")
+                        for a in flags) and not show)
     cli = {"check": "--check" in flags,
            "notify": "--notify" in flags,
            "quit_after": "--quit-after" in flags}
