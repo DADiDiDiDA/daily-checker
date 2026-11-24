@@ -133,6 +133,9 @@ class GameListView(QWidget):
 
         tools = QHBoxLayout()
         tools.setSpacing(8)
+        # 优先用主窗口注入的配置对象：自己 load_config() 会拿到一份独立快照，
+        # 总览里改了手动状态后，这边的筛选和 chip 计数还按旧配置算。
+        self._shared_cfg = None
         self.cfg = core.load_config()
         self.sort_combo = ThemedCombo([(k, t) for k, t in core.SORT_MODES_BASIC],
                                       core.get_sort_mode(self.cfg), 116)
@@ -188,9 +191,17 @@ class GameListView(QWidget):
         self.set_filter("all")
 
     # ---------- 数据 ----------
+    def set_config(self, cfg) -> None:
+        """主窗口把自己的配置对象交给本视图，避免两套快照各说各话。"""
+        self._shared_cfg = cfg
+        self.cfg = cfg
+
+    def _reload_cfg(self) -> None:
+        self.cfg = self._shared_cfg if self._shared_cfg is not None else core.load_config()
+
     def set_items(self, items) -> None:
         self.items = list(items)
-        self.cfg = core.load_config()   # 手动状态 / 排序设置可能刚变过，重读一次
+        self._reload_cfg()               # 手动状态 / 排序设置可能刚变过
         self._sorted_items = core.sort_items(self.items, self._effective_mode(),
                                              core.get_manual_order(self.cfg),
                                              cfg=self.cfg)
@@ -262,7 +273,7 @@ class GameListView(QWidget):
             # 保留当前视觉顺序（可能已被拖拽过）
             new = [self.rows[r.item.key].item for r in self._rows_in_order()]
         else:
-            self.cfg = core.load_config()
+            self._reload_cfg()
             new = core.sort_items(self.items, mode,
                                   core.get_manual_order(self.cfg), cfg=self.cfg)
         self._apply_manual_drag()        # 拖拽开关跟排序方式走，顺序没变也要切
@@ -626,7 +637,9 @@ def _page_scroll() -> QScrollArea:
     sc.viewport().setStyleSheet("QScrollArea > QWidget { background: transparent; }")
     holder = QWidget()
     lay = QVBoxLayout(holder)
-    lay.setContentsMargins(0, 0, 6, 8)
+    # 右边留 18px：原来只有 6px，窄窗口（1020 宽）下卡片右边缘几乎贴着窗口，
+    # 「添加游戏…」「编辑」按钮看起来像被裁掉
+    lay.setContentsMargins(0, 0, 18, 8)
     lay.setSpacing(12)
     sc.setWidget(holder)
     sc.lay = lay

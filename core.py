@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 APP_ID = "DailyChecker"
 APP_NAME = "日常检查器"
-APP_VERSION = "1.7.12"
+APP_VERSION = "1.7.13"
 
 # ==================== 监控配置 ====================
 
@@ -483,11 +483,16 @@ def rule_of(cfg: dict, game_name: str) -> dict:
 
 
 def rule_ext(rule: dict, game: Optional[GameConfig]) -> Optional[str]:
-    """扩展名统一由规则库的「扫描文件后缀」决定（v1.7.4 起）。
+    """扩展名优先取规则库的「扫描文件后缀」，规则留空时回退游戏自带的后缀。
 
-    空 = 不过滤，扫描所有文件。旧配置未绑定规则的游戏，rule_of 合成时
-    已把游戏自带的 extension 并进规则，行为不变。"""
-    return str((rule or {}).get("ext") or "").strip() or None
+    空 = 不过滤，扫描所有文件。内置规则的 ext 一律为空（它们靠日志关键字判断），
+    若不回退到 game.extension，扫描就会在自动化程序根目录下把所有文件
+    （exe / dll / 图片 / 配置）逐个整读一遍，既慢又容易在备份文件里误命中关键字。"""
+    ext = str((rule or {}).get("ext") or "").strip()
+    if ext:
+        return ext
+    gext = str(getattr(game, "extension", "") or "").strip()
+    return gext or None
 
 
 def parse_exts(ext: Optional[str]) -> Optional[List[str]]:
@@ -656,6 +661,9 @@ class Game:
     state: str = "idle"               # idle | running | done
     scanned: bool = False
     excluded: bool = False            # 用户手动排除，不参与检查
+    # 运行时字段：MainWindow 每次刷新行之前用它算好「考虑手动覆盖后的未完成」，
+    # 让游戏列表行的徽章/边框和总览统计、筛选、托盘角标保持同一口径。
+    eff_failed: Optional[bool] = None
 
     @property
     def has_error(self) -> bool:
@@ -818,16 +826,25 @@ def _migrate_merge_m9a(cfg: dict) -> None:
                 rule_map[k] = "r_maa"
 
 
+_CFG_LOCK = threading.RLock()
+
+
 def save_config(cfg: dict) -> None:
-    """原子写配置：临时文件 + os.replace，避免写一半崩溃留下截断 JSON 导致下次启动配置丢失。"""
-    os.makedirs(cache_dir(), exist_ok=True)
-    p = config_path()
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, p)
+    """原子写配置：临时文件 + os.replace，避免写一半崩溃留下截断 JSON 导致下次启动配置丢失。
+
+    检查线程（写手动状态/无错天数）和 UI 线程（改开关/规则）都会调用，共用一个
+    临时文件名会互相截断：一边 json.dump 到一半被另一边清空，os.replace 还可能
+    撞上文件占用。加锁 + 按 pid 命名临时文件，两个进程同时写也不会互相破坏。
+    """
+    with _CFG_LOCK:
+        os.makedirs(cache_dir(), exist_ok=True)
+        p = config_path()
+        tmp = "%s.%d.tmp" % (p, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
 
 
 def rule_text_bare(rule: dict) -> str:
@@ -875,6 +892,44 @@ def add_game(cfg: dict, name: str, folder: str, ext: str = ".log",
     ck["custom_games"] = items
     if rule_id:
         set_game_rule(cfg, name, rule_id)
+    return True
+
+
+def rename_game(cfg: dict, old: str, new: str) -> bool:
+    """把自定义游戏改名，并把所有「按名字索引」的配置一起迁移。
+
+    以前编辑游戏时改名，实际是用新名字又 add 了一次：旧条目留在 custom_games 里，
+    列表里新旧两条、旧的那条还在被检查，用户以为改名没生效。
+    """
+    old = str(old or "").strip()
+    new = str(new or "").strip()
+    if not old or not new:
+        return False
+    if old == new:
+        return True
+    if any(g.name == old for g in DAILY_GAMES):
+        return False                    # 内置游戏不能改名
+    ck = cfg.setdefault("check", {})
+    items = [d for d in (ck.get("custom_games") or []) if isinstance(d, dict)]
+    hit = False
+    for d in items:
+        if str(d.get("name") or "").strip() == old:
+            d["name"] = new
+            hit = True
+    if not hit:
+        return False
+    for key in ("rule_map", "methods", "file_targets", "thresholds",
+                "threshold_enabled", "error_check_map", "folder_map"):
+        m = ck.get(key)
+        if isinstance(m, dict) and old in m:
+            m[new] = m.pop(old)
+    for key in ("fixed_marks", "manual_states"):
+        m = ck.get(key)
+        if isinstance(m, dict) and old in m:
+            m[new] = m.pop(old)
+    ck["excluded"] = [new if x == old else x for x in (ck.get("excluded") or [])]
+    ck["manual_order"] = [new if x == old else x
+                          for x in (ck.get("manual_order") or [])]
     return True
 
 
@@ -1168,6 +1223,23 @@ def folder_keyword_hit(name: str, folder_map: dict) -> bool:
     """部分映射：文件夹名里只要包含任一关键词就算命中（大小写不敏感）。"""
     low = str(name or "").lower()
     return any(k and str(k).lower() in low for k in folder_map)
+
+
+def _has_hit_subdir(path: str, folder_map: dict, excludes) -> bool:
+    """该目录的子目录里是否还有命中项 —— 用来识别「装着一堆游戏的分组目录」。
+
+    My-maawork 这类容器目录本身命中 "maa" 关键词，但它下面每个游戏目录也命中；
+    只看顶层目录名会把容器当成一款游戏。读不到就返回 False（宁可保留）。
+    """
+    try:
+        for n in os.listdir(path):
+            p = os.path.join(path, n)
+            if os.path.isdir(p) and folder_keyword_hit(n, folder_map) \
+                    and not is_excluded_dir(p, excludes):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def resolve_folder_name(name: str, folder_map: dict) -> str:
@@ -1882,15 +1954,21 @@ class Engine:
                     if not game_error_check_enabled(self.cfg, g.name)}
         excludes = get_scan_excludes(self.cfg)
         roots = [d for d in get_scan_dirs(self.cfg) if os.path.isdir(d)]
+        depth = get_scan_depth(self.cfg)
         for root in roots:
             if self.cancel.is_set():
                 break
+            base = len(os.path.normpath(root).split(os.sep))
             for dirpath, dirnames, _ in os.walk(root):
                 if self.cancel.is_set():
                     break
                 # 被排除的子目录整棵跳过
                 dirnames[:] = [d for d in dirnames
                                if not is_excluded_dir(os.path.join(dirpath, d), excludes)]
+                # 扫描深度：设置页里调了必须真的生效，否则预览说「只看 2 层」、
+                # 实际跑检查却把整棵树扫一遍（大目录下每轮都白扫）
+                if depth and len(os.path.normpath(dirpath).split(os.sep)) - base >= depth:
+                    dirnames[:] = []
                 hits = [d for d in dirnames if d in target_set]
                 if not hits:
                     continue
@@ -2028,16 +2106,25 @@ class Engine:
     def _maawork_dirs(self) -> List[str]:
         folder_map = get_folder_map(self.cfg)
         excludes = get_scan_excludes(self.cfg)
-        out: List[str] = []
+        cand: List[tuple] = []          # [(目录名, 完整路径)]
         for root in get_scan_dirs(self.cfg):
             try:
                 for n in os.listdir(root):
                     p = os.path.join(root, n)
                     if os.path.isdir(p) and folder_keyword_hit(n, folder_map) \
-                            and not is_excluded_dir(p, excludes) and n not in out:
-                        out.append(n)
+                            and not is_excluded_dir(p, excludes) \
+                            and n not in [c[0] for c in cand]:
+                        cand.append((n, p))
             except Exception:
                 continue
+        # 容器目录（如 D:\Automate\My-maawork 下面装着 MFAAFGO 等）本身不是一款游戏，
+        # 但 "my-maawork" 含子串 "maa"，会被当成「明日方舟」→ 列表里出现两条、
+        # 无错天数打印两行。判据：子目录里还有命中项，就当成分组目录跳过。
+        out: List[str] = []
+        for n, p in cand:
+            if _has_hit_subdir(p, folder_map, excludes):
+                continue
+            out.append(n)
         return out
 
     # ---------- 消息构建（与原脚本四条通知一致） ----------
@@ -2193,10 +2280,13 @@ class Engine:
         try:
             if secret:
                 ts = str(round(time.time() * 1000))
-                sign = urllib.parse.quote_plus(
-                    base64.b64encode(hmac.new(secret.encode("utf-8"),
-                                              f"{ts}\n{secret}".encode("utf-8"),
-                                              hashlib.sha256).digest()))
+                # sign 必须是「未编码」的 base64 原文：下面 urlencode 会编码一次。
+                # 早期这里先 quote_plus 再 urlencode，等于编了两次（+ → %2B → %252B），
+                # 钉钉只解一次，拿到的是 %2B 字面量 → 必然 310000 sign not match。
+                sign = base64.b64encode(
+                    hmac.new(secret.encode("utf-8"),
+                             f"{ts}\n{secret}".encode("utf-8"),
+                             hashlib.sha256).digest()).decode("ascii")
                 # 用 urlparse 正确合并 query：先移除旧 timestamp/sign，再追加，避免重复参数/fragment 错位
                 parts = urllib.parse.urlsplit(webhook)
                 q = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)

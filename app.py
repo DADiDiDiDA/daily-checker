@@ -468,6 +468,7 @@ class MainWindow(QWidget):
         self.page_home.state_requested.connect(self.set_manual_state)
 
         self.page_games = GamesPage()
+        self.page_games.list.set_config(self.cfg)   # 与主窗口共用同一份配置对象
         self.page_games.row_open.connect(self.open_game_folder)
         self.page_games.row_log.connect(self.open_game_log)
         self.page_games.row_debug.connect(self.open_game_debug)
@@ -905,7 +906,16 @@ class MainWindow(QWidget):
         self.check_worker.finished_all.connect(self._on_check_finished)
         self.check_worker.start()
 
+    def _annotate(self, items) -> None:
+        """把「考虑手动覆盖后的未完成」写进条目，行的徽章与边框都用它。
+
+        以前行只判断 it.daily，手动标完成后总览/托盘已算完成，游戏列表却还挂着
+        红色「未完成」，两个页面互相矛盾。"""
+        for it in items:
+            it.eff_failed = core.effective_failed(self.cfg, it)
+
     def _on_item_checked(self, item) -> None:
+        self._annotate([item])
         self.page_home.update_item(item)
         self.page_games.update_item(item)
 
@@ -929,6 +939,14 @@ class MainWindow(QWidget):
 
         self.last_result = result
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        # 无错天数 / 存疑 / 异常标记是在全部 item_ready 之后才写回条目的，
+        # 扫描途中刷的行拿到的还是旧值 → 这里必须整表重刷一遍，否则游戏列表页
+        # 会显示上一轮的无错天数和徽章，直到用户右键改了某项才恢复。
+        self._annotate(self.games)
+        for it in self.games:
+            row = self.page_games.list.rows.get(it.key)
+            if row is not None:
+                row.set_item(it)
         self.page_games.refresh_order()      # 结果都回来了，按当前排序方式落定
         self.page_home.last_check_time = time.strftime("%H:%M:%S")
         self.page_home.refresh_stats()
@@ -943,6 +961,11 @@ class MainWindow(QWidget):
         n_susp = len(result["suspicious"])
         cli = dict(getattr(self, "_cli_override", None) or self._cli)
         self._cli_override = None
+        # 启动参数里的 --check / --notify 只对启动那一轮有效。常驻实例如果就是
+        # 用 --check 起的，不清掉的话之后每次定时/手动检查都会被当成命令行模式，
+        # 自动推送被跳过、也没有「检查完成」提示。
+        for _k in ("check", "notify"):
+            self._cli.pop(_k, None)
         cancelled = bool(result.get("cancelled"))
         cli_mode = bool(cli.get("check") or cli.get("notify"))
         auto = bool((self.cfg.get("background") or {}).get("auto_notify", True))
@@ -971,11 +994,11 @@ class MainWindow(QWidget):
             if "dingtalk" in chans:
                 self._send_notify_worker()
 
-        # --quit-after 强制生效：没发通知就在这里收尾；发了通知则等 worker 结束。
-        # 用 _cli_quit_after（而不是本轮 cli）是因为单实例转发时 quit_after
-        # 被从 payload 里剥掉了，必须沿用常驻实例启动时记下的强制退出标记。
-        if getattr(self, "_cli_quit_after", False) and not (
-                self.notify_worker and self.notify_worker.isRunning()):
+        # 触发进程在等回执：不能在 --quit-after 时才回。带 --check 单发（没有
+        # --quit-after）的转发进程以前等不到任何回执，会卡到 3600 秒超时。
+        # 发了通知就等 worker 结束再回执（worker 完成后自己会调 _complete_cli_round）。
+        if not (self.notify_worker and self.notify_worker.isRunning()) and (
+                self._cli_waiters or getattr(self, "_cli_quit_after", False)):
             self._complete_cli_round()
 
     def cancel_tasks(self) -> None:
@@ -1148,8 +1171,10 @@ class MainWindow(QWidget):
                                  and it.daily != "failed" and not it.has_error
                                  and not it.excluded)
             if self.last_result:
-                susp = {k: v for k, v in self.last_result["suspicious"].items()
-                        if k != name} if on else {}
+                # 只增删当前这一款：以前 on=False 时整个置空，
+                # 会把其它游戏的存疑一起删掉，后续通知里就少了它们
+                susp = dict(self.last_result["suspicious"])
+                susp.pop(name, None)
                 if it.suspicious:
                     susp[name] = it.log_size
                 self.last_result["suspicious"] = susp
@@ -1175,8 +1200,8 @@ class MainWindow(QWidget):
                                  and it.daily != "failed" and not it.has_error
                                  and not it.excluded)
             if self.last_result:
-                susp = {k: v for k, v in self.last_result["suspicious"].items()
-                        if k != name} if en else {}
+                susp = dict(self.last_result["suspicious"])
+                susp.pop(name, None)
                 if it.suspicious:
                     susp[name] = it.log_size
                 self.last_result["suspicious"] = susp
@@ -1316,6 +1341,12 @@ class MainWindow(QWidget):
         if not dlg.exec():
             return
         v = dlg.value()
+        if v["name"] != name:
+            # 改名：迁移所有按名字索引的配置，而不是再 add 一条新的
+            if not core.rename_game(self.cfg, name, v["name"]):
+                self.toast.show_text("内置游戏不能改名（可以新建一款自定义游戏）", ok=False)
+                return
+            name = v["name"]
         if not core.add_game(self.cfg, v["name"], v["folder"], v["ext"],
                              v["success_message"], v["rule_id"]):
             self.toast.show_text("保存失败：游戏名或自动化程序目录为空", ok=False)
@@ -1511,6 +1542,7 @@ class MainWindow(QWidget):
         self.toast.show_text(f"扫描目录已保存：{len(dirs)} 个目录{tail}")
 
     def _refresh_game_row(self, it) -> None:
+        self._annotate([it])
         home = getattr(self.page_home, "list", None)      # 总览页不一定有明细行
         if home is not None:
             row = home.rows.get(it.key)
@@ -1779,12 +1811,39 @@ def main() -> int:
     return app.exec()
 
 
+_CRASH_SEEN = {"key": None, "t": 0.0, "skipped": 0}
+
+
 def _excepthook(exc_type, exc, tb):
-    """Qt 事件循环里的异常不会冒到 main()，必须挂 excepthook 才能留下日志。"""
+    """Qt 事件循环里的异常不会冒到 main()，必须挂 excepthook 才能留下日志。
+
+    高频槽（进度动画、绘制）里一旦抛异常会以每秒几十条的速度刷屏，
+    所以同类型同位置 60 秒内只写一条（并注明折叠了多少次），文件超过 1MB 轮转。
+    """
     import traceback
-    text = "".join(traceback.format_exception(exc_type, exc, tb))
     try:
-        with open(os.path.join(core.config_dir(), "crash.log"), "a", encoding="utf-8") as f:
+        last = traceback.extract_tb(tb)[-1]
+        key = (exc_type.__name__, last.filename, last.lineno)
+    except Exception:
+        key = (exc_type.__name__, "", 0)
+    now = time.time()
+    if _CRASH_SEEN["key"] == key and now - _CRASH_SEEN["t"] < 60.0:
+        _CRASH_SEEN["skipped"] += 1
+        return
+    folded = _CRASH_SEEN["skipped"]
+    _CRASH_SEEN.update(key=key, t=now, skipped=0)
+
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    if folded:
+        text = "（同类异常在最近 60 秒内又发生 %d 次，已折叠）\n%s" % (folded, text)
+    path = os.path.join(core.config_dir(), "crash.log")
+    try:
+        if os.path.getsize(path) > 1024 * 1024:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+    try:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{text}")
     except Exception:
         pass

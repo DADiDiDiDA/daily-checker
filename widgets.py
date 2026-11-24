@@ -831,6 +831,14 @@ class GameRow(QFrame):
 
     MIME = "application/x-dc-row"
 
+    @staticmethod
+    def _failed(it) -> bool:
+        """优先用 MainWindow 算好的 effective_failed（含手动覆盖），没有就退回 daily。"""
+        eff = getattr(it, "eff_failed", None)
+        if eff is None:
+            return bool(it.scanned and it.daily == "failed")
+        return bool(eff)
+
     def __init__(self, item, parent=None):
         super().__init__(parent)
         self.item = item
@@ -960,12 +968,14 @@ class GameRow(QFrame):
         elif not it.scanned:
             self.status_badge.setText("未检查")
             self.status_badge.set_color("dim")
-        elif it.daily == "done":
-            self.status_badge.setText("已完成")
-            self.status_badge.set_color("success")
-        else:
+        elif self._failed(it):
             self.status_badge.setText("未完成")
             self.status_badge.set_color("danger")
+        else:
+            # 手动「设为已完成 / 强制已完成」时 daily 仍是 failed，
+            # 但 effective_failed 已经为 False，徽章要跟着走，别和总览打架
+            self.status_badge.setText("已完成")
+            self.status_badge.set_color("success")
 
         # 无错天数（仅 My-maawork 游戏有意义，其它隐藏）
         if it.is_maawork and it.scanned and not it.excluded:
@@ -1086,7 +1096,10 @@ class GameRow(QFrame):
         m.addSeparator()
         act_copy = m.addAction("复制自动化程序目录")
 
-        act = m.exec(e.globalPos())
+        try:
+            act = m.exec(e.globalPos())
+        finally:
+            m.deleteLater()      # 每次右键都新建菜单，不销毁会一直挂在行控件下面
         if act is None:
             return
         if act is act_open:
@@ -1115,7 +1128,7 @@ class GameRow(QFrame):
             border = qc(p.accent, 0.40)
         elif self.item.excluded:
             border = qc(p.border, p.border_alpha * 0.7)
-        elif self.item.has_error or (self.item.scanned and self.item.daily == "failed"):
+        elif self.item.has_error or GameRow._failed(self.item):
             border = qc(p.danger, 0.42)
         elif self.item.suspicious:
             border = qc(p.warning, 0.42)
@@ -1414,6 +1427,11 @@ class ThemedCombo(QPushButton):
         painter.end()
 
     def _open(self) -> None:
+        # 上一次的弹层是以 self 为父控件的子控件，覆盖引用不会销毁它；
+        # 常驻使用下来每次点下拉都会多留一份（连带 N 个按钮）。
+        old = getattr(self, "_popup", None)
+        if old is not None:
+            old.deleteLater()
         self._popup = _PopupCard(self._items, self._key, self.width() + 26, self)
         self._popup.picked.connect(self._on_pick)
         self._popup.popup_at(self)
@@ -1839,7 +1857,10 @@ class SuffixMultiSelect(QWidget):
             a.setChecked(f".{opt}" in self._sel)
             a.triggered.connect(lambda _=False, o="." + opt: self._toggle(o))
             menu.addAction(a)
-        menu.exec(self.btn.mapToGlobal(self.btn.rect().bottomLeft()))
+        try:
+            menu.exec(self.btn.mapToGlobal(self.btn.rect().bottomLeft()))
+        finally:
+            menu.deleteLater()
 
     def _toggle(self, ext: str) -> None:
         if ext in self._sel:
