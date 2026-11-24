@@ -166,3 +166,13 @@ python app.py --check            # 命令行跑一轮，不发通知
 6. 离屏构建 `MainWindow` 冒烟通过了吗？`_save_cfg` 打桩了吗？
 7. onerror 开关的判定是否统一走 `game_error_check_enabled()`（总开关 AND 每行开关）？`scan_errors()` 过滤是否放在 `_resolve_game_name()` 之后？设置页是否不再重复放 `err_toggle`？
 8. 工具栏新增控件后，是否在真实窗口宽度（约 950px）下截图确认不重叠？`GameListView` 顶部拆成「分类行 + 工具行」两个 H 布局，别再往同一行塞超过 6 个控件。
+
+## 11. v1.7.13 全量核查补记
+
+- **加签只能编码一次**：`quote_plus` 之后再交给 `urlencode` 会二次编码（`+` → `%252B`），钉钉只解一次 → `310000 sign not match`。签名片段保持未编码的 base64 原文，交给 `urlencode` 统一编码。
+- **`rule_ext` 必须回退 `game.extension`**：内置规则的 `ext` 一律为空，若直接返回 `None` 就是不过滤，会把程序根目录下所有文件整读一遍（本意是「只读 `.log`」）。
+- **按名字索引的配置表有一整套**：`rule_map` / `methods` / `file_targets` / `thresholds` / `threshold_enabled` / `error_check_map` / `folder_map` / `fixed_marks` / `manual_states` / `excluded` / `manual_order`。改名必须走 `rename_game()` 全表迁移，不要用 `add_game()` 新名字覆盖（旧条目会留下继续被检查）。
+- **行的状态口径**：徽章与边框只能走 `effective_failed()`（`Game.eff_failed` 由 `MainWindow._annotate` 写入），不要直接看 `it.daily`，否则「手动标完成」在总览生效、在列表页不生效。
+- **检查结束后必须重刷行**：`streak` / `suspicious` / `error_flags` 在全部 `item_ready` 之后才回写，扫描途中刷到的是旧值。
+- **单实例转发要回执**：只要 `_cli_waiters` 非空，一轮结束就调 `_complete_cli_round()`（与 `--quit-after` 解耦），否则 `--check` 单发会等满 3600 秒。
+- **配置写盘**：`save_config` 加 `_CFG_LOCK` + 按 pid 命名临时文件；`crash.log` 按异常位置 60 秒合并 + 1MB 轮转。
