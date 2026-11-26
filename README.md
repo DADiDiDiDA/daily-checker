@@ -8,7 +8,7 @@
 | --- | --- |
 | 平台 | Windows 10 / 11 |
 | 技术栈 | Python 3 · PySide6 · PyInstaller（单文件 exe，便携免安装） |
-| 当前版本 | **v1.7.13** |
+| 当前版本 | **v1.7.14** |
 | 仓库 | [DADiDiDiDA/daily-checker](https://github.com/DADiDiDiDA/daily-checker) |
 
 ## 先看这一句：它检查的不是游戏日志

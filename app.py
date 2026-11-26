@@ -686,8 +686,7 @@ class MainWindow(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if hasattr(self, "toast"):
-            self.toast.move((self.width() - self.toast.width()) // 2,
-                            self.height() - self.toast.height() - 26)
+            self.toast._place()
         if hasattr(self, "_bg_timer"):
             self._bg_timer.start(120)
 

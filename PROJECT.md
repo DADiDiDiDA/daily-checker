@@ -176,3 +176,10 @@ python app.py --check            # 命令行跑一轮，不发通知
 - **检查结束后必须重刷行**：`streak` / `suspicious` / `error_flags` 在全部 `item_ready` 之后才回写，扫描途中刷到的是旧值。
 - **单实例转发要回执**：只要 `_cli_waiters` 非空，一轮结束就调 `_complete_cli_round()`（与 `--quit-after` 解耦），否则 `--check` 单发会等满 3600 秒。
 - **配置写盘**：`save_config` 加 `_CFG_LOCK` + 按 pid 命名临时文件；`crash.log` 按异常位置 60 秒合并 + 1MB 轮转。
+
+## 12. v1.7.14 补记：主题重刷与提示条
+
+- **内联着色的控件必须整棵重刷**：`_label()` 用 `setStyleSheet` 写死颜色并记 `_fg_key`，`Card` 标题、`SettingRow` 标题、`Chip`、`ThemedCombo` 同理。各页的 `refresh_theme()` 只更新文字内容时，主题一切换就会残留旧配色（深→浅 = 白字压在浅卡片上）。现在 `pages.retint_subtree(root)` 统一处理：`_fg_key` 标签 → `Card.update()` → `SettingRow/SettingGroup/Chip/ThemedCombo.refresh_theme()`，`MethodsPages` / `GamesPage` / `DashboardView` 都调用它。新增页面若有内联着色，记得在 `refresh_theme()` 里调这个。
+- **Toast 放右下角**：`widgets.Toast._place()` 是唯一的位置来源（`show_text()` 与 `MainWindow.resizeEvent()` 都调它）。放在底部正中会压住首页的排序下拉与列表末行文字；右下角只压住末行右侧的开关，且 2.6 秒淡出。
+- **`onerror` 是内部名**：工具栏标签改成「错误检测」，判定逻辑仍走 `game_error_check_enabled()`（总开关 AND 每行开关），不要在新代码里再写中文以外的新叫法。
+- 历史脚本断言要跟着行为走：`rule_ext` 自 v1.7.5 起回退 `game.extension`；`core.set_default_rule()` 是「同 id 再传一次即取消」的开关语义，测试里先清空再设。

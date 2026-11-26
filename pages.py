@@ -43,6 +43,30 @@ def _label(text: str, size: int = 13, color_key: str = "text", bold: bool = Fals
     return lbl
 
 
+def retint_subtree(root) -> None:
+    """主题切换后，把内联着色的控件按当前调色板整体重刷一遍。
+
+    _label() / SettingRow / Chip 等都是直接 setStyleSheet 上色，不会跟着
+    全局 QSS 走。只调用各视图的 refresh()（刷新文字）会留下旧配色：
+    深色切浅色后，卡片标题会变成「浅色卡片 + 白字」，整块看不见。
+    """
+    p = THEME.p
+    for w in root.findChildren(QWidget):
+        key = w.property("_fg_key")
+        if key:
+            tint(w, getattr(p, key, p.text))
+    for card in root.findChildren(Card):
+        card.update()
+    for row in root.findChildren(SettingRow):
+        row.refresh_theme()
+    for grp in root.findChildren(SettingGroup):
+        grp.refresh_theme()
+    for combo in root.findChildren(ThemedCombo):
+        combo.refresh_theme()
+    for chip in root.findChildren(Chip):
+        chip.refresh_theme()
+
+
 class SecretEdit(QWidget):
     """密码式输入框 + 「显示/隐藏」切换按钮。
 
@@ -165,7 +189,7 @@ class GameListView(QWidget):
             "总开关关闭后，所有游戏的 on_error / screencap 检查都跳过；"
             "每行的小开关只影响该游戏")
         self.onerror_all.toggled.connect(self._on_onerror_all)
-        err_lay.addWidget(_label("onerror", 11, "text_muted"))
+        err_lay.addWidget(_label("错误检测", 11, "text_muted"))
         err_lay.addWidget(self.onerror_all, 0, Qt.AlignVCenter)
         tools.addWidget(err_box, 0, Qt.AlignRight)
         outer.addLayout(tools)
@@ -438,6 +462,8 @@ class GamesPage(QWidget):
 
     def refresh_theme(self) -> None:
         self.list.refresh_theme()
+        # 工具栏上的说明字（如「错误检测」）也是内联着色，一起重刷
+        retint_subtree(self)
 
 
 def _edit(ph: str, text: str = "") -> QLineEdit:
@@ -1063,6 +1089,9 @@ class MethodsPages:
 
     def refresh_theme(self) -> None:
         self.refresh()
+        # 三个子页的卡片标题 / 行标题都是内联着色，只刷文字会留下旧颜色
+        for view in (self.folder, self.rules, self.games):
+            retint_subtree(view)
 
     def _refresh_folder_map(self) -> None:
         self.folder.refresh(self.cfg)
@@ -1426,6 +1455,7 @@ class DashboardView(QWidget):
             t.refresh()
         self.hero.update()
         self.summary_card.update()
+        retint_subtree(self)
 
 
 # ---------------------------------------------------------------- 对话框

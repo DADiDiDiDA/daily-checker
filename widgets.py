@@ -1166,6 +1166,18 @@ class Toast(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(lambda: self.setVisible(False))
 
+    def _place(self) -> None:
+        """右下角：只压住列表最后一行的右侧（开关/记号），不挡固定的工具栏和按钮。
+
+        以前贴在底部正中，正好盖住首页的排序下拉和列表里的说明文字；
+        顶部又被页面标题和窗口按钮挤着，只有右下角是「压到了也不误事」的区域。
+        """
+        par = self.parentWidget()
+        if par is None:
+            return
+        self.move(max(12, par.width() - self.width() - 24),
+                  max(12, par.height() - self.height() - 16))
+
     def show_text(self, text: str, ok: bool = True) -> None:
         p = THEME.p
         self.lbl.setText(text)
@@ -1176,8 +1188,7 @@ class Toast(QWidget):
             f"#toast{{background: {rgba(p.surface(), 0.97)};"
             f"border: 1px solid {border}; border-radius: {p.radius_btn + 4}px;}}")
         self.adjustSize()
-        self.move((self.parentWidget().width() - self.width()) // 2,
-                  self.parentWidget().height() - self.height() - 26)
+        self._place()
         self.raise_()                 # 页面重建后可能盖住 Toast，置顶再显示
         self.effect.setOpacity(0.0)
         self.setVisible(True)
